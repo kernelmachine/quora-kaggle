@@ -58,14 +58,16 @@ class Siamese(object):
 
             bw = bw_cell_unit(LSTM_SIZE, reuse=None)
             bw = tf.contrib.rnn.DropoutWrapper(bw, output_keep_prob=0.2)
-
+            fw_stack = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.BasicLSTMCell(LSTM_SIZE, reuse=None) for _ in range(3)])
+            bw_stack = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.BasicLSTMCell(LSTM_SIZE, reuse=None) for _ in range(3)])
             # Forward direction cell
             # Backward direction cell
 
-            outputs, _, _ = tf.contrib.rnn.static_bidirectional_rnn(fw,
-                                                                    bw,
+            outputs, _, _ = tf.contrib.rnn.static_bidirectional_rnn(fw_stack,
+                                                                    bw_stack,
                                                                     embed_split,
                                                                     dtype=tf.float32)
+            
             # temporal_mean = tf.add_n(outputs) / EMBEDDING_DIM
             # Ws = tf.get_variable(name='Ws', shape=[2*LSTM_SIZE, 1], initializer=tf.contrib.layers.xavier_initializer())
             # self.variable_summaries(Ws)
@@ -84,12 +86,13 @@ class Siamese(object):
         scores = tf.exp(-tf.squeeze(tf.norm(q1_repr - q2_repr, ord=1, axis=1, keep_dims=True)))
         # loss = tf.to_float(self.labels) * tf.square(scores) + tf.square(tf.maximum(1 - scores, 0))
         loss = tf.to_float(self.labels) * tf.square(scores) + (1.0 - tf.to_float(self.labels)) * tf.square(tf.maximum((1.0 - scores), 0.0))
-        loss = tf.reduce_mean(loss)
+        loss = 0.5*tf.reduce_mean(loss)
         tf.summary.scalar('contrastive_loss', loss)
-        train_opt = tf.train.AdamOptimizer().minimize(loss)
-
+        train_opt = tf.train.AdamOptimizer(0.1).minimize(loss)
+        logloss = tf.losses.log_loss(predictions=scores, labels=self.labels)
+        tf.summary.scalar('logloss', logloss)
         merged = tf.summary.merge_all()
-        return scores, loss, train_opt, merged, q1_repr, q2_repr
+        return scores, loss, logloss, train_opt, merged, q1_repr, q2_repr
 
 def preprocess(df):
     import string
@@ -206,7 +209,7 @@ if __name__=='__main__':
     print("running model...")
     with tf.Graph().as_default() as graph:
         siamese = Siamese()
-        scores, loss, train_opt, merged, q1_repr, q2_repr = siamese.build_model(graph)
+        scores, loss, train_opt, logloss, merged, q1_repr, q2_repr = siamese.build_model(graph)
         train_writer = tf.summary.FileWriter('/tmp/quora_logs' + '/train_3',
                                             graph)
         init = tf.global_variables_initializer()
@@ -220,13 +223,13 @@ if __name__=='__main__':
                 for ix, (train_x1_batch, train_x2_batch, train_labels_batch) in enumerate(tqdm(train_iter_, total=N_SAMPLES / BATCH_SIZE)):
 
                     feed_dict = siamese.create_feed_dict(x1=train_x1_batch, x2=train_x2_batch, labels = train_labels_batch)
-                    batch_train_scores, batch_train_loss, _, summary, q1_repr_val, q2_repr_val = sess.run([scores, loss, train_opt, merged, q1_repr, q2_repr], feed_dict=feed_dict)
+                    batch_train_scores, batch_train_loss, batch_train_logloss, _, summary, q1_repr_val, q2_repr_val = sess.run([scores, loss, logloss, train_opt, merged, q1_repr, q2_repr], feed_dict=feed_dict)
                     train_writer.add_summary(summary, ix)
                     all_scores.append(batch_train_scores)
                     q1_reprs.append(q1_repr_val)
                     q2_reprs.append(q2_repr_val)
                     if ix % 100 == 0:
-                        tqdm.write("    EPOCH: %s, BATCH: %s, TRAIN CONTRASTIVE LOSS: %s" % (i, ix, batch_train_loss))
+                        tqdm.write("    EPOCH: %s, BATCH: %s, TRAIN CONTRASTIVE LOSS: %s, TRAIN LOG LOSS: %s" % (i, ix, batch_train_loss, batch_train_logloss))
                     if ix % 500 == 0:
                         tqdm.write("RUNNING VALIDATION....")
                         valid_iter_ = batch_generator(valid_x1,valid_x2, valid_labels, VALIDATION_BATCH_SIZE)
