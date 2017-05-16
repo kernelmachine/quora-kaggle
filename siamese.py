@@ -1,15 +1,15 @@
 import tensorflow as tf
 import pandas as pd
 from tensorflow.contrib import learn
-import numpy as np 
+import numpy as np
 from gensim.models.keyedvectors import KeyedVectors
 from tqdm import tqdm
 from nltk.corpus import stopwords
 import re
-from bnlstm import LSTMCell
+
 BATCH_SIZE = 100
 VALIDATION_BATCH_SIZE = 100
-EMBEDDING_DIM = 20
+EMBEDDING_DIM = 80
 VOCAB_SIZE = 200000
 N_SAMPLES = 400000
 LSTM_SIZE = 300
@@ -17,12 +17,12 @@ N_CLASSES = 2
 N_EPOCHS = 1
 N_VALIDATION = 10000
 class Siamese(object):
-    
+
     def __init__(self):
         self.x1 = tf.placeholder(dtype=tf.int32, shape=(None, EMBEDDING_DIM), name='x1')
         self.x2 = tf.placeholder(dtype=tf.int32, shape=(None, EMBEDDING_DIM), name='x2')
         self.labels = tf.placeholder(dtype=tf.int32, shape=(None,), name='labels')
-    
+
     def variable_summaries(self,var):
         """Attach a lot of summaries to a Tensor (for TensorBoard visualization)."""
         with tf.name_scope('summaries'):
@@ -36,34 +36,37 @@ class Siamese(object):
             tf.summary.histogram('histogram', var)
 
     def create_feed_dict(self, x1, x2, labels):
-        return {self.x1 : x2, 
-                self.x2 : x2, 
+        return {self.x1 : x2,
+                self.x2 : x2,
                 self.labels : labels}
 
     def get_predictions(self, scores):
         predictions = tf.sign(scores, name="predictions")
-        return(predictions)  
-        
+        return(predictions)
+
     def build_model(self, graph):
-        def siamese_nn(x):
-            embed = tf.nn.embedding_lookup(tf.diag(tf.ones(shape=[40])), x)
+        def biRNN(x):
+            n_layers = 3
+            embed = tf.nn.embedding_lookup(tf.diag(tf.ones(shape=[EMBEDDING_DIM])), x)
             embed_split = tf.split(axis=1, num_or_size_splits=EMBEDDING_DIM, value=embed)
             embed_split = [tf.squeeze(x, axis=[1]) for x in embed_split]
-            cell_unit = tf.contrib.rnn.LSTMCell#tf.nn.rnn_cell.BasicLSTMCell
-        
+            fw_cell_unit = tf.contrib.rnn.BasicLSTMCell#tf.nn.rnn_cell.BasicLSTMCell
+            bw_cell_unit = tf.contrib.rnn.BasicLSTMCell#tf.nn.rnn_cell.BasicLSTMCell
+
+            fw = fw_cell_unit(LSTM_SIZE, reuse=None)
+            fw = tf.contrib.rnn.DropoutWrapper(fw, output_keep_prob=0.2)
+
+            bw = bw_cell_unit(LSTM_SIZE, reuse=None)
+            bw = tf.contrib.rnn.DropoutWrapper(bw, output_keep_prob=0.2)
+
             # Forward direction cell
-            lstm_forward_cell = cell_unit(LSTM_SIZE, reuse=tf.get_variable_scope().reuse)
-            lstm_forward_cell = tf.contrib.rnn.DropoutWrapper(lstm_forward_cell, output_keep_prob=0.2)
-            
             # Backward direction cell
-            lstm_backward_cell = cell_unit(LSTM_SIZE,  reuse=tf.get_variable_scope().reuse)
-            lstm_backward_cell = tf.contrib.rnn.DropoutWrapper(lstm_backward_cell, output_keep_prob=0.2)
-            outputs, _, _ = tf.contrib.rnn.static_bidirectional_rnn(lstm_forward_cell,
-                                                                    lstm_backward_cell,
+
+            outputs, _, _ = tf.contrib.rnn.static_bidirectional_rnn(fw,
+                                                                    bw,
                                                                     embed_split,
                                                                     dtype=tf.float32)
-
-            temporal_mean = tf.add_n(outputs) / EMBEDDING_DIM
+            # temporal_mean = tf.add_n(outputs) / EMBEDDING_DIM
             # Ws = tf.get_variable(name='Ws', shape=[2*LSTM_SIZE, 1], initializer=tf.contrib.layers.xavier_initializer())
             # self.variable_summaries(Ws)
             # bs = tf.get_variable(name='bs', shape=[1], initializer=tf.random_normal_initializer(stddev=0.1))
@@ -71,25 +74,26 @@ class Siamese(object):
             # final_output = tf.matmul(temporal_mean, Ws) + bs
             # tf.summary.histogram('pre_activations', final_output)
             # Merge all the summaries and write them out to /tmp/mnist_logs (by default)
-            
-            return temporal_mean
+            final_state = outputs[-1]
+            return final_state
+        with tf.variable_scope("x1", reuse=None) as scope:
+            q1_repr = biRNN(self.x1)
+        with tf.variable_scope("x2", reuse=None) as scope:
+            q2_repr = biRNN(self.x2)
 
-        q1_repr = siamese_nn(self.x1)
-        with tf.variable_scope(tf.get_variable_scope(), reuse=True):
-            q2_repr = siamese_nn(self.x2)
-
-        scores = tf.squeeze(tf.norm(q1_repr - q2_repr, ord=1, axis = 1, keep_dims=True))
-        loss = tf.to_float(self.labels)  * 2 * tf.square(scores) +  (1.0 - tf.to_float(self.labels)) * tf.exp(-2.77 * scores)
+        scores = tf.exp(-tf.squeeze(tf.norm(q1_repr - q2_repr, ord=1, axis=1, keep_dims=True)))
+        # loss = tf.to_float(self.labels) * tf.square(scores) + tf.square(tf.maximum(1 - scores, 0))
+        loss = tf.to_float(self.labels) * tf.square(scores) + (1.0 - tf.to_float(self.labels)) * tf.square(tf.maximum((1.0 - scores), 0.0))
         loss = tf.reduce_mean(loss)
         tf.summary.scalar('contrastive_loss', loss)
-        train_opt = tf.train.AdamOptimizer().minimize(loss)      
-                    
+        train_opt = tf.train.AdamOptimizer().minimize(loss)
+
         merged = tf.summary.merge_all()
         return scores, loss, train_opt, merged, q1_repr, q2_repr
 
 def preprocess(df):
     import string
-    def clean_text(text, remove_stop_words=True, stem_words=False):
+    def clean_text(text, remove_stop_words=False, stem_words=False):
     # Clean the text, with the option to remove stop_words and to stem words.
         from nltk.corpus import stopwords
         stop_words = set(stopwords.words('english'))
@@ -122,28 +126,28 @@ def preprocess(df):
         text = re.sub(r" UK ", " england ", text)
         text = re.sub(r"imrovement", "improvement", text)
         text = re.sub(r"intially", "initially", text)
-        text = re.sub(r" dms ", "direct messages ", text)  
-        text = re.sub(r"demonitization", "demonetization", text) 
+        text = re.sub(r" dms ", "direct messages ", text)
+        text = re.sub(r"demonitization", "demonetization", text)
         text = re.sub(r"actived", "active", text)
         text = re.sub(r"kms", " kilometers ", text)
         text = re.sub(r"KMs", " kilometers ", text)
-        text = re.sub(r" cs ", " computer science ", text) 
+        text = re.sub(r" cs ", " computer science ", text)
         text = re.sub(r" upvotes ", " up votes ", text)
         text = re.sub(r" iPhone ", " phone ", text)
-        text = re.sub(r"\0rs ", " rs ", text) 
+        text = re.sub(r"\0rs ", " rs ", text)
         text = re.sub(r"calender", "calendar", text)
         text = re.sub(r"ios", "operating system", text)
         text = re.sub(r"programing", "programming", text)
         text = re.sub(r"bestfriend", "best friend", text)
-        text = re.sub(r"III", "3", text) 
+        text = re.sub(r"III", "3", text)
         text = re.sub(r"the US", "america", text)
-                
+
         # Optionally, remove stop words
         if remove_stop_words:
             text = text.split()
             text = [w for w in text if not w in stop_words]
             text = " ".join(text)
-        
+
         # Optionally, shorten words to their stems
         if stem_words:
             from nltk.stem.snowball import SnowballStemmer
@@ -151,7 +155,7 @@ def preprocess(df):
             stemmer = SnowballStemmer('english')
             stemmed_words = [stemmer.stem(word) for word in text]
             text = " ".join(stemmed_words)
-        
+
         # Return a list of words
         return(text)
 
@@ -198,14 +202,14 @@ if __name__=='__main__':
     valid_x1 = train_x1[np.random.choice(train_x1.shape[0], N_VALIDATION, replace=False), :EMBEDDING_DIM]
     valid_x2 = train_x2[np.random.choice(train_x2.shape[0], N_VALIDATION, replace=False), :EMBEDDING_DIM]
     valid_labels = train_labels[np.random.choice(train_labels.shape[0], N_VALIDATION, replace=False)]
-   
+
     print("running model...")
     with tf.Graph().as_default() as graph:
         siamese = Siamese()
         scores, loss, train_opt, merged, q1_repr, q2_repr = siamese.build_model(graph)
         train_writer = tf.summary.FileWriter('/tmp/quora_logs' + '/train_3',
                                             graph)
-        init = tf.global_variables_initializer()    
+        init = tf.global_variables_initializer()
         with tf.Session(graph=graph) as sess:
             sess.run(init)
             q1_reprs = []
@@ -214,7 +218,7 @@ if __name__=='__main__':
             for i in range(N_EPOCHS):
                 train_iter_ = batch_generator(train_x1,train_x2, train_labels, BATCH_SIZE)
                 for ix, (train_x1_batch, train_x2_batch, train_labels_batch) in enumerate(tqdm(train_iter_, total=N_SAMPLES / BATCH_SIZE)):
-                    
+
                     feed_dict = siamese.create_feed_dict(x1=train_x1_batch, x2=train_x2_batch, labels = train_labels_batch)
                     batch_train_scores, batch_train_loss, _, summary, q1_repr_val, q2_repr_val = sess.run([scores, loss, train_opt, merged, q1_repr, q2_repr], feed_dict=feed_dict)
                     train_writer.add_summary(summary, ix)
