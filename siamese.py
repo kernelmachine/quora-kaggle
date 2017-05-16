@@ -7,14 +7,15 @@ from tqdm import tqdm
 from nltk.corpus import stopwords
 import re
 
-BATCH_SIZE = 100
+BATCH_SIZE = 2000
 VALIDATION_BATCH_SIZE = 100
 EMBEDDING_DIM = 80
 VOCAB_SIZE = 200000
-N_SAMPLES = 400000
-LSTM_SIZE = 300
+N_SAMPLES = 298000
+N_SICK_SAMPLES = 9800
+LSTM_SIZE = 50
 N_CLASSES = 2
-N_EPOCHS = 1
+N_EPOCHS = 50
 N_VALIDATION = 10000
 class Siamese(object):
 
@@ -40,10 +41,6 @@ class Siamese(object):
                 self.x2 : x2,
                 self.labels : labels}
 
-    def get_predictions(self, scores):
-        predictions = tf.sign(scores, name="predictions")
-        return(predictions)
-
     def build_model(self, graph):
         def biRNN(x):
             n_layers = 3
@@ -54,10 +51,8 @@ class Siamese(object):
             bw_cell_unit = tf.contrib.rnn.BasicLSTMCell#tf.nn.rnn_cell.BasicLSTMCell
 
             fw = fw_cell_unit(LSTM_SIZE, reuse=None)
-            fw = tf.contrib.rnn.DropoutWrapper(fw, output_keep_prob=0.2)
 
             bw = bw_cell_unit(LSTM_SIZE, reuse=None)
-            bw = tf.contrib.rnn.DropoutWrapper(bw, output_keep_prob=0.2)
             fw_stack = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.BasicLSTMCell(LSTM_SIZE, reuse=None) for _ in range(3)])
             bw_stack = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.BasicLSTMCell(LSTM_SIZE, reuse=None) for _ in range(3)])
             # Forward direction cell
@@ -67,7 +62,7 @@ class Siamese(object):
                                                                     bw_stack,
                                                                     embed_split,
                                                                     dtype=tf.float32)
-            
+
             # temporal_mean = tf.add_n(outputs) / EMBEDDING_DIM
             # Ws = tf.get_variable(name='Ws', shape=[2*LSTM_SIZE, 1], initializer=tf.contrib.layers.xavier_initializer())
             # self.variable_summaries(Ws)
@@ -83,67 +78,77 @@ class Siamese(object):
         with tf.variable_scope("x2", reuse=None) as scope:
             q2_repr = biRNN(self.x2)
 
-        scores = tf.exp(-tf.squeeze(tf.norm(q1_repr - q2_repr, ord=1, axis=1, keep_dims=True)))
-        # loss = tf.to_float(self.labels) * tf.square(scores) + tf.square(tf.maximum(1 - scores, 0))
-        loss = tf.to_float(self.labels) * tf.square(scores) + (1.0 - tf.to_float(self.labels)) * tf.square(tf.maximum((1.0 - scores), 0.0))
-        loss = 0.5*tf.reduce_mean(loss)
+        # scores = tf.exp(-tf.squeeze(tf.norm(q1_repr - q2_repr, ord=1, axis=1, keep_dims=True)))
+
+        def loss_with_step(q1_repr, q2_repr):
+            margin = 5.0
+            labels_t = tf.to_float(self.labels)
+            labels_f = tf.subtract(1.0, tf.to_float(self.labels), name="1-yi")          # labels_ = !labels;
+            manhattan = tf.squeeze(tf.norm(q1_repr - q2_repr, ord=1, axis=1, keep_dims=True))
+            C = tf.constant(margin, name="C")
+            pos = tf.multiply(labels_t, manhattan, name="y_x_eucd")
+            neg = tf.multiply(labels_f, tf.maximum(0.0, tf.subtract(C, manhattan)), name="Ny_C-eucd")
+            losses = tf.add(pos, neg, name="losses")
+            loss = 0.5*tf.reduce_mean(losses, name="loss")
+            return loss
+        loss = loss_with_step(q1_repr, q2_repr)
+        # loss = tf.to_float(self.labels) * tf.square(scores) + (1.0 - tf.to_float(self.labels)) * tf.square(tf.maximum((1.0 - scores), 0.0))
+        # loss = 0.5*tf.reduce_mean(loss)
         tf.summary.scalar('contrastive_loss', loss)
-        train_opt = tf.train.AdamOptimizer(0.1).minimize(loss)
-        logloss = tf.losses.log_loss(predictions=scores, labels=self.labels)
-        tf.summary.scalar('logloss', logloss)
+        train_opt = tf.train.AdamOptimizer().minimize(loss)
         merged = tf.summary.merge_all()
-        return scores, loss, logloss, train_opt, merged, q1_repr, q2_repr
+        return loss, train_opt, merged, q1_repr, q2_repr
 
 def preprocess(df):
     import string
-    def clean_text(text, remove_stop_words=False, stem_words=False):
+    def clean_text(text, remove_stop_words=True, stem_words=False):
     # Clean the text, with the option to remove stop_words and to stem words.
         from nltk.corpus import stopwords
         stop_words = set(stopwords.words('english'))
 
-        # Clean the text
-        text = re.sub(r"[^A-Za-z0-9]", " ", text)
-        text = re.sub(r"what's", "", text)
-        text = re.sub(r"What's", "", text)
-        text = re.sub(r"\'s", " ", text)
-        text = re.sub(r"\'ve", " have ", text)
-        text = re.sub(r"can't", "cannot ", text)
-        text = re.sub(r"n't", " not ", text)
-        text = re.sub(r"I'm", "i am", text)
-        text = re.sub(r" m ", " am ", text)
-        text = re.sub(r"\'re", " are ", text)
-        text = re.sub(r"\'d", " would ", text)
-        text = re.sub(r"\'ll", " will ", text)
-        text = re.sub(r"60k", " 60000 ", text)
-        text = re.sub(r" e g ", " eg ", text)
-        text = re.sub(r" b g ", " bg ", text)
-        text = re.sub(r"\0s", "0", text)
-        text = re.sub(r" 9 11 ", "911", text)
-        text = re.sub(r"e-mail", "email", text)
-        text = re.sub(r"\s{2,}", " ", text)
-        text = re.sub(r"quikly", "quickly", text)
-        text = re.sub(r" usa ", " america ", text)
-        text = re.sub(r" USA ", " america ", text)
-        text = re.sub(r" u s ", " america ", text)
-        text = re.sub(r" uk ", " england ", text)
-        text = re.sub(r" UK ", " england ", text)
-        text = re.sub(r"imrovement", "improvement", text)
-        text = re.sub(r"intially", "initially", text)
-        text = re.sub(r" dms ", "direct messages ", text)
-        text = re.sub(r"demonitization", "demonetization", text)
-        text = re.sub(r"actived", "active", text)
-        text = re.sub(r"kms", " kilometers ", text)
-        text = re.sub(r"KMs", " kilometers ", text)
-        text = re.sub(r" cs ", " computer science ", text)
-        text = re.sub(r" upvotes ", " up votes ", text)
-        text = re.sub(r" iPhone ", " phone ", text)
-        text = re.sub(r"\0rs ", " rs ", text)
-        text = re.sub(r"calender", "calendar", text)
-        text = re.sub(r"ios", "operating system", text)
-        text = re.sub(r"programing", "programming", text)
-        text = re.sub(r"bestfriend", "best friend", text)
-        text = re.sub(r"III", "3", text)
-        text = re.sub(r"the US", "america", text)
+        # # Clean the text
+        # text = re.sub(r"[^A-Za-z0-9]", " ", text)
+        # text = re.sub(r"what's", "", text)
+        # text = re.sub(r"What's", "", text)
+        # text = re.sub(r"\'s", " ", text)
+        # text = re.sub(r"\'ve", " have ", text)
+        # text = re.sub(r"can't", "cannot ", text)
+        # text = re.sub(r"n't", " not ", text)
+        # text = re.sub(r"I'm", "i am", text)
+        # text = re.sub(r" m ", " am ", text)
+        # text = re.sub(r"\'re", " are ", text)
+        # text = re.sub(r"\'d", " would ", text)
+        # text = re.sub(r"\'ll", " will ", text)
+        # text = re.sub(r"60k", " 60000 ", text)
+        # text = re.sub(r" e g ", " eg ", text)
+        # text = re.sub(r" b g ", " bg ", text)
+        # text = re.sub(r"\0s", "0", text)
+        # text = re.sub(r" 9 11 ", "911", text)
+        # text = re.sub(r"e-mail", "email", text)
+        # text = re.sub(r"\s{2,}", " ", text)
+        # text = re.sub(r"quikly", "quickly", text)
+        # text = re.sub(r" usa ", " america ", text)
+        # text = re.sub(r" USA ", " america ", text)
+        # text = re.sub(r" u s ", " america ", text)
+        # text = re.sub(r" uk ", " england ", text)
+        # text = re.sub(r" UK ", " england ", text)
+        # text = re.sub(r"imrovement", "improvement", text)
+        # text = re.sub(r"intially", "initially", text)
+        # text = re.sub(r" dms ", "direct messages ", text)
+        # text = re.sub(r"demonitization", "demonetization", text)
+        # text = re.sub(r"actived", "active", text)
+        # text = re.sub(r"kms", " kilometers ", text)
+        # text = re.sub(r"KMs", " kilometers ", text)
+        # text = re.sub(r" cs ", " computer science ", text)
+        # text = re.sub(r" upvotes ", " up votes ", text)
+        # text = re.sub(r" iPhone ", " phone ", text)
+        # text = re.sub(r"\0rs ", " rs ", text)
+        # text = re.sub(r"calender", "calendar", text)
+        # text = re.sub(r"ios", "operating system", text)
+        # text = re.sub(r"programing", "programming", text)
+        # text = re.sub(r"bestfriend", "best friend", text)
+        # text = re.sub(r"III", "3", text)
+        # text = re.sub(r"the US", "america", text)
 
         # Optionally, remove stop words
         if remove_stop_words:
@@ -186,6 +191,7 @@ if __name__=='__main__':
     print("reading training data...")
     # train = pd.read_csv("train.csv")
     # train = train.dropna(axis = 0)
+    # train = train.groupby('is_duplicate').apply(lambda x: x.sample(n=149000))
     # # test = pd.read_csv("test.csv")
     # # test = test.dropna(axis = 0)
     # print("preprocessing training data...")
@@ -193,11 +199,21 @@ if __name__=='__main__':
     # np.save('train_x1', train_x1)
     # np.save('train_x2', train_x2)
     # np.save('train_labels', train_labels)
-    # print("preprocessing test data...")
-    # test_x1, test_x2, test_labels = preprocess(test)
+    # print("preprocessing sick data...")
+    # sick = pd.read_csv("sick.csv")
+    # sick_x1, sick_x2, sick_labels = preprocess(sick)
+    # np.save('sick_x1', sick_x1)
+    # np.save('sick_x2', sick_x2)
+    # np.save('sick_labels', sick_labels)
+
     train_x1 = np.load('train_x1.npy')
     train_x2 = np.load('train_x2.npy')
     train_labels = np.load('train_labels.npy')
+
+    sick_x1 = np.load('sick_x1.npy')
+    sick_x2 = np.load('sick_x2.npy')
+    sick_labels = np.load('sick_labels.npy')
+
     print("subsampling...")
     train_x1 = train_x1[np.random.choice(train_x1.shape[0], N_SAMPLES, replace=False), :EMBEDDING_DIM]
     train_x2 = train_x2[np.random.choice(train_x2.shape[0], N_SAMPLES, replace=False), :EMBEDDING_DIM]
@@ -206,30 +222,36 @@ if __name__=='__main__':
     valid_x2 = train_x2[np.random.choice(train_x2.shape[0], N_VALIDATION, replace=False), :EMBEDDING_DIM]
     valid_labels = train_labels[np.random.choice(train_labels.shape[0], N_VALIDATION, replace=False)]
 
+    sick_x1 = sick_x1[np.random.choice(sick_x1.shape[0], N_SICK_SAMPLES, replace=False), :EMBEDDING_DIM]
+    sick_x2 = sick_x2[np.random.choice(sick_x2.shape[0], N_SICK_SAMPLES, replace=False), :EMBEDDING_DIM]
+    sick_labels = sick_labels[np.random.choice(sick_labels.shape[0], N_SICK_SAMPLES, replace=False)]
+
+    train_x1 = np.concatenate([sick_x1, train_x1], axis = 0)
+    train_x2 = np.concatenate([sick_x2, train_x2], axis = 0)
+    train_labels = np.concatenate([sick_labels, train_labels], axis = 0)
     print("running model...")
     with tf.Graph().as_default() as graph:
         siamese = Siamese()
-        scores, loss, train_opt, logloss, merged, q1_repr, q2_repr = siamese.build_model(graph)
-        train_writer = tf.summary.FileWriter('/tmp/quora_logs' + '/train_3',
+        loss, train_opt, merged, q1_repr, q2_repr = siamese.build_model(graph)
+        train_writer = tf.summary.FileWriter('/tmp/quora_logs' + '/train_7',
                                             graph)
         init = tf.global_variables_initializer()
         with tf.Session(graph=graph) as sess:
             sess.run(init)
             q1_reprs = []
             q2_reprs = []
-            all_scores = []
+            print("pre-training...")
+        
             for i in range(N_EPOCHS):
                 train_iter_ = batch_generator(train_x1,train_x2, train_labels, BATCH_SIZE)
-                for ix, (train_x1_batch, train_x2_batch, train_labels_batch) in enumerate(tqdm(train_iter_, total=N_SAMPLES / BATCH_SIZE)):
-
+                for ix, (train_x1_batch, train_x2_batch, train_labels_batch) in enumerate(tqdm(train_iter_, total=(N_SAMPLES + N_SICK_SAMPLES) / BATCH_SIZE)):
                     feed_dict = siamese.create_feed_dict(x1=train_x1_batch, x2=train_x2_batch, labels = train_labels_batch)
-                    batch_train_scores, batch_train_loss, batch_train_logloss, _, summary, q1_repr_val, q2_repr_val = sess.run([scores, loss, logloss, train_opt, merged, q1_repr, q2_repr], feed_dict=feed_dict)
+                    batch_train_loss, _, summary, q1_repr_val, q2_repr_val = sess.run([loss, train_opt, merged, q1_repr, q2_repr], feed_dict=feed_dict)
                     train_writer.add_summary(summary, ix)
-                    all_scores.append(batch_train_scores)
                     q1_reprs.append(q1_repr_val)
                     q2_reprs.append(q2_repr_val)
                     if ix % 100 == 0:
-                        tqdm.write("    EPOCH: %s, BATCH: %s, TRAIN CONTRASTIVE LOSS: %s, TRAIN LOG LOSS: %s" % (i, ix, batch_train_loss, batch_train_logloss))
+                        tqdm.write("    EPOCH: %s, BATCH: %s, TRAIN CONTRASTIVE LOSS: %s" % (i, ix, batch_train_loss))
                     if ix % 500 == 0:
                         tqdm.write("RUNNING VALIDATION....")
                         valid_iter_ = batch_generator(valid_x1,valid_x2, valid_labels, VALIDATION_BATCH_SIZE)
