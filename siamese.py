@@ -13,7 +13,8 @@ EMBEDDING_DIM = 80
 VOCAB_SIZE = 200000
 N_SAMPLES = 298000
 N_SICK_SAMPLES = 9800
-LSTM_SIZE = 50
+LSTM_SIZE = 300
+HIDDEN_SIZE = 200
 N_CLASSES = 2
 N_EPOCHS = 50
 N_VALIDATION = 10000
@@ -22,7 +23,7 @@ class Siamese(object):
     def __init__(self):
         self.x1 = tf.placeholder(dtype=tf.int32, shape=(None, EMBEDDING_DIM), name='x1')
         self.x2 = tf.placeholder(dtype=tf.int32, shape=(None, EMBEDDING_DIM), name='x2')
-        self.labels = tf.placeholder(dtype=tf.int32, shape=(None,), name='labels')
+        self.labels = tf.placeholder(dtype=tf.int32, shape=(None, N_CLASSES), name='labels')
 
     def variable_summaries(self,var):
         """Attach a lot of summaries to a Tensor (for TensorBoard visualization)."""
@@ -37,31 +38,40 @@ class Siamese(object):
             tf.summary.histogram('histogram', var)
 
     def create_feed_dict(self, x1, x2, labels):
-        return {self.x1 : x2,
+        return {self.x1 : x1,
                 self.x2 : x2,
                 self.labels : labels}
-
+    
+    
     def build_model(self, graph):
+
+        # def siamese_nn(x):
+        #     h1 = dense_unit(x=tf.to_float(x), name="dense_unit1", input_size=LSTM_SIZE, output_size=HIDDEN_SIZE)
+        #     h2 = dense_unit(x=h1, name="dense_unit2", input_size=HIDDEN_SIZE,  output_size=HIDDEN_SIZE)
+        #     h3 = dense_unit(x=h2, name="dense_unit3", input_size=HIDDEN_SIZE,  output_size=HIDDEN_SIZE)
+        #     bn4 = tf.nn.batch_normalization(h3, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
+        #     return bn4 
+
         def biRNN(x):
             n_layers = 3
             embed = tf.nn.embedding_lookup(tf.diag(tf.ones(shape=[EMBEDDING_DIM])), x)
             embed_split = tf.split(axis=1, num_or_size_splits=EMBEDDING_DIM, value=embed)
             embed_split = [tf.squeeze(x, axis=[1]) for x in embed_split]
             fw_cell_unit = tf.contrib.rnn.BasicLSTMCell#tf.nn.rnn_cell.BasicLSTMCell
-            bw_cell_unit = tf.contrib.rnn.BasicLSTMCell#tf.nn.rnn_cell.BasicLSTMCell
+            # bw_cell_unit = tf.contrib.rnn.BasicLSTMCell#tf.nn.rnn_cell.BasicLSTMCell
 
             fw = fw_cell_unit(LSTM_SIZE, reuse=None)
 
-            bw = bw_cell_unit(LSTM_SIZE, reuse=None)
-            fw_stack = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.BasicLSTMCell(LSTM_SIZE, reuse=None) for _ in range(3)])
-            bw_stack = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.BasicLSTMCell(LSTM_SIZE, reuse=None) for _ in range(3)])
+            # bw = bw_cell_unit(LSTM_SIZE, reuse=None)
+            # fw_stack = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.BasicLSTMCell(LSTM_SIZE, reuse=None) for _ in range(3)])
+            # bw_stack = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.BasicLSTMCell(LSTM_SIZE, reuse=None) for _ in range(3)])
             # Forward direction cell
             # Backward direction cell
-
-            outputs, _, _ = tf.contrib.rnn.static_bidirectional_rnn(fw_stack,
-                                                                    bw_stack,
-                                                                    embed_split,
-                                                                    dtype=tf.float32)
+            outputs, _ = tf.contrib.rnn.static_rnn(fw, embed_split, dtype=tf.float32)
+            # outputs, _, _ = tf.contrib.rnn.static_bidirectional_rnn(fw,
+            #                                                         bw,
+            #                                                         embed_split,
+            #                                                         dtype=tf.float32)
 
             # temporal_mean = tf.add_n(outputs) / EMBEDDING_DIM
             # Ws = tf.get_variable(name='Ws', shape=[2*LSTM_SIZE, 1], initializer=tf.contrib.layers.xavier_initializer())
@@ -73,35 +83,89 @@ class Siamese(object):
             # Merge all the summaries and write them out to /tmp/mnist_logs (by default)
             final_state = outputs[-1]
             return final_state
+        
+        def dense_unit(x, name, input_size, output_size):
+            bn = tf.nn.batch_normalization(x, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
+            W1 = tf.get_variable(name="W"+name, shape=[input_size, output_size], initializer=tf.contrib.layers.xavier_initializer())
+            b1 = tf.get_variable(name="b"+name, shape=[1], initializer=tf.random_normal_initializer(stddev=0.1))
+            h1 = tf.nn.relu(tf.matmul(bn, W1) + b1)
+            return h1
+        
+       
         with tf.variable_scope("x1", reuse=None) as scope:
             q1_repr = biRNN(self.x1)
+            # x1_h1 = dense_unit(x=tf.to_float(self.x1), name="x1_dense_unit1", input_size=EMBEDDING_DIM, output_size=HIDDEN_SIZE)
+            # x1_h2 = dense_unit(x=x1_h1, name="x1_dense_unit2", input_size=HIDDEN_SIZE,  output_size=HIDDEN_SIZE)
+            # x1_h3 = dense_unit(x=x1_h2, name="x1_dense_unit3", input_size=HIDDEN_SIZE,  output_size=HIDDEN_SIZE)
+            # q1_repr = tf.nn.batch_normalization(x1_h3, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
         with tf.variable_scope("x2", reuse=None) as scope:
             q2_repr = biRNN(self.x2)
-
-        # scores = tf.exp(-tf.squeeze(tf.norm(q1_repr - q2_repr, ord=1, axis=1, keep_dims=True)))
-
-        def loss_with_step(q1_repr, q2_repr):
-            margin = 5.0
-            labels_t = tf.to_float(self.labels)
-            labels_f = tf.subtract(1.0, tf.to_float(self.labels), name="1-yi")          # labels_ = !labels;
-            manhattan = tf.squeeze(tf.norm(q1_repr - q2_repr, ord=1, axis=1, keep_dims=True))
-            C = tf.constant(margin, name="C")
-            pos = tf.multiply(labels_t, manhattan, name="y_x_eucd")
-            neg = tf.multiply(labels_f, tf.maximum(0.0, tf.subtract(C, manhattan)), name="Ny_C-eucd")
-            losses = tf.add(pos, neg, name="losses")
-            loss = 0.5*tf.reduce_mean(losses, name="loss")
-            return loss
-        loss = loss_with_step(q1_repr, q2_repr)
+            # x2_h1 = dense_unit(x=tf.to_float(self.x2), name="x2_dense_unit1", input_size=EMBEDDING_DIM, output_size=HIDDEN_SIZE)
+            # x2_h2 = dense_unit(x=x2_h1, name="x2_dense_unit2", input_size=HIDDEN_SIZE,  output_size=HIDDEN_SIZE)
+            # x2_h3 = dense_unit(x=x2_h2, name="x2_dense_unit3", input_size=HIDDEN_SIZE,  output_size=HIDDEN_SIZE)
+            # q2_repr = tf.nn.batch_normalization(x2_h3, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
+        with tf.variable_scope("output", reuse=None) as scope:
+            h4 = dense_unit(x=tf.concat([q1_repr, q2_repr], axis=1), name="h4", input_size=LSTM_SIZE*2, output_size=HIDDEN_SIZE)
+            h5 = dense_unit(x=h4, name="h5", input_size=HIDDEN_SIZE, output_size=HIDDEN_SIZE)
+            h6 = dense_unit(x=h5, name="h6", input_size=HIDDEN_SIZE, output_size=HIDDEN_SIZE)
+            h7 = dense_unit(x=h6, name="h7", input_size=HIDDEN_SIZE, output_size=HIDDEN_SIZE)
+            h8 = dense_unit(x=h7, name="h8", input_size=HIDDEN_SIZE, output_size=HIDDEN_SIZE)
+            output = dense_unit(x=h8, name="output", input_size=HIDDEN_SIZE, output_size=N_CLASSES)
+        
+        # with tf.variable_scope("dense_unit_1", reuse=None) as scope: 
+        #     bn1 = tf.nn.batch_normalization(tf.concat([q1_repr, q2_repr], axis=1), mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
+        #     W1 = tf.get_variable("W1", shape=[LSTM_SIZE*4, HIDDEN_SIZE], initializer=tf.contrib.layers.xavier_initializer())
+        #     b1 = tf.get_variable(name='b1', shape=[1], initializer=tf.random_normal_initializer(stddev=0.1))
+        #     h1 = tf.nn.relu(tf.matmul(bn1, W1) + b1)
+        # with tf.variable_scope("dense_unit_2", reuse=None) as scope: 
+        #     bn2 = tf.nn.batch_normalization(h1, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
+        #     W2 = tf.get_variable("W2", shape=[HIDDEN_SIZE, HIDDEN_SIZE], initializer=tf.contrib.layers.xavier_initializer())
+        #     b2 = tf.get_variable(name='b2', shape=[1], initializer=tf.random_normal_initializer(stddev=0.1))
+        #     h2 = tf.nn.relu(tf.matmul(bn2, W2) + b2)
+        # with tf.variable_scope("dense_unit_3", reuse=None) as scope:     
+        #     bn3 = tf.nn.batch_normalization(h2, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
+        #     W3 = tf.get_variable("W3", shape=[HIDDEN_SIZE, HIDDEN_SIZE], initializer=tf.contrib.layers.xavier_initializer())
+        #     b3 = tf.get_variable(name='b3', shape=[1], initializer=tf.random_normal_initializer(stddev=0.1))
+        #     h3 = tf.nn.relu(tf.matmul(bn3, W3) + b2)
+        # with tf.variable_scope("output", reuse=None) as scope: 
+        #     bn4 = tf.nn.batch_normalization(h3, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
+        #     W4 = tf.get_variable("W4", shape=[HIDDEN_SIZE, N_CLASSES], initializer=tf.contrib.layers.xavier_initializer())
+        #     b4 = tf.get_variable(name='b4', shape=[1], initializer=tf.random_normal_initializer(stddev=0.1))
+        #     h4 = tf.matmul(bn4, W4) + b4
+        # pred = tf.squeeze(tf.norm(q1_repr - q2_repr, ord=1, axis=1, keep_dims=True))
+        # eucd2 = tf.pow(tf.subtract(q1_repr, q2_repr), 2)
+        # eucd2 = tf.reduce_sum(eucd2, 1)
+        # pred = tf.sqrt(eucd2+1e-6, name="eucd")
+        # def contrastive_loss(pred):
+        #     margin = 1.0
+        #     labels_t = tf.to_float(self.labels)
+        #     labels_f = tf.subtract(1.0, tf.to_float(self.labels), name="1-yi")          # labels_ = !labels;
+        #     C = tf.constant(margin, name="C")
+        #     pos = tf.multiply(labels_t, pred, name="y_x_eucd")
+        #     neg = tf.multiply(labels_f, tf.maximum(0.0, tf.subtract(C, pred)), name="Ny_C-eucd")
+        #     losses = tf.add(pos, neg, name="losses")
+        #     loss = 0.5*tf.reduce_mean(losses, name="loss")
+        #     return loss
+        # loss = contrastive_loss(pred)
+        loss = tf.nn.softmax_cross_entropy_with_logits(labels=self.labels, logits=output)
+        loss = tf.reduce_mean(loss)
         # loss = tf.to_float(self.labels) * tf.square(scores) + (1.0 - tf.to_float(self.labels)) * tf.square(tf.maximum((1.0 - scores), 0.0))
         # loss = 0.5*tf.reduce_mean(loss)
-        tf.summary.scalar('contrastive_loss', loss)
+        # loss = loss_with_step(q1_repr, q2_repr)
+        tf.summary.scalar('cross entropy loss', loss)
         train_opt = tf.train.AdamOptimizer().minimize(loss)
+        pred = tf.nn.softmax(output)
+        # idx = tf.where(tf.greater_equal(pred, tf.constant(0.5)))
+        # correct_predictions = tf.equal(tf.gather(pred,idx), tf.to_float(self.labels))
+        correct_predictions = tf.equal(tf.argmax(pred, 1), tf.argmax(self.labels, 1))
+        accuracy = tf.reduce_mean(tf.cast(correct_predictions, tf.float32))
+        tf.summary.scalar('accuracy', accuracy)
         merged = tf.summary.merge_all()
-        return loss, train_opt, merged, q1_repr, q2_repr
+        return loss, pred, train_opt, merged, q1_repr, q2_repr
 
 def preprocess(df):
     import string
-    def clean_text(text, remove_stop_words=True, stem_words=False):
+    def clean_text(text, remove_stop_words=False, stem_words=False):
     # Clean the text, with the option to remove stop_words and to stem words.
         from nltk.corpus import stopwords
         stop_words = set(stopwords.words('english'))
@@ -177,9 +241,12 @@ def preprocess(df):
         # Pad or crop to max_sentence_len
         sentence_ix = (sentence_ix + [0]*max_sentence_length)[0:max_sentence_length]
         return(sentence_ix)
-    x1 = np.matrix(df.question1.str.lower().apply(sentence2onehot).tolist())
-    x2 = np.matrix(df.question2.str.lower().apply(sentence2onehot).tolist())
-    labels = np.array(df.is_duplicate)
+    x1 = np.matrix(df.question1.str.lower().apply(lambda x: unicode(str(x),"utf-8")).apply(sentence2onehot).tolist())
+    x2 = np.matrix(df.question2.str.lower().apply(lambda x: unicode(str(x),"utf-8")).apply(sentence2onehot).tolist())
+    labels_idx = np.array(df.is_duplicate)
+    labels = np.zeros((labels_idx.shape[0], 2))
+    for i, x in enumerate(labels_idx):
+        labels[i, int(x)] = 1
     return x1, x2, labels
 
 def batch_generator(x1, x2, labels, batch_size):
@@ -188,7 +255,7 @@ def batch_generator(x1, x2, labels, batch_size):
             yield (x1[ndx:min(ndx + batch_size, l), :], x2[ndx:min(ndx + batch_size, l), :], labels[ndx:min(ndx + batch_size, l)])
 
 if __name__=='__main__':
-    print("reading training data...")
+    # print("reading training data...")
     # train = pd.read_csv("train.csv")
     # train = train.dropna(axis = 0)
     # train = train.groupby('is_duplicate').apply(lambda x: x.sample(n=149000))
@@ -198,21 +265,21 @@ if __name__=='__main__':
     # train_x1, train_x2, train_labels = preprocess(train)
     # np.save('train_x1', train_x1)
     # np.save('train_x2', train_x2)
-    # np.save('train_labels', train_labels)
+    # np.save('train_labels_2', train_labels)
     # print("preprocessing sick data...")
     # sick = pd.read_csv("sick.csv")
     # sick_x1, sick_x2, sick_labels = preprocess(sick)
     # np.save('sick_x1', sick_x1)
     # np.save('sick_x2', sick_x2)
-    # np.save('sick_labels', sick_labels)
+    # np.save('sick_labels_2', sick_labels)
 
     train_x1 = np.load('train_x1.npy')
     train_x2 = np.load('train_x2.npy')
-    train_labels = np.load('train_labels.npy')
+    train_labels = np.load('train_labels_2.npy')
 
     sick_x1 = np.load('sick_x1.npy')
     sick_x2 = np.load('sick_x2.npy')
-    sick_labels = np.load('sick_labels.npy')
+    sick_labels = np.load('sick_labels_2.npy')
 
     print("subsampling...")
     train_x1 = train_x1[np.random.choice(train_x1.shape[0], N_SAMPLES, replace=False), :EMBEDDING_DIM]
@@ -232,8 +299,8 @@ if __name__=='__main__':
     print("running model...")
     with tf.Graph().as_default() as graph:
         siamese = Siamese()
-        loss, train_opt, merged, q1_repr, q2_repr = siamese.build_model(graph)
-        train_writer = tf.summary.FileWriter('/tmp/quora_logs' + '/train_7',
+        loss, pred, train_opt, merged, q1_repr, q2_repr = siamese.build_model(graph)
+        train_writer = tf.summary.FileWriter('/tmp/quora_logs' + '/train_3',
                                             graph)
         init = tf.global_variables_initializer()
         with tf.Session(graph=graph) as sess:
@@ -246,13 +313,12 @@ if __name__=='__main__':
                 train_iter_ = batch_generator(train_x1,train_x2, train_labels, BATCH_SIZE)
                 for ix, (train_x1_batch, train_x2_batch, train_labels_batch) in enumerate(tqdm(train_iter_, total=(N_SAMPLES + N_SICK_SAMPLES) / BATCH_SIZE)):
                     feed_dict = siamese.create_feed_dict(x1=train_x1_batch, x2=train_x2_batch, labels = train_labels_batch)
-                    batch_train_loss, _, summary, q1_repr_val, q2_repr_val = sess.run([loss, train_opt, merged, q1_repr, q2_repr], feed_dict=feed_dict)
+                    batch_train_loss, pred_val, _, summary, q1_repr_val, q2_repr_val = sess.run([loss, pred, train_opt, merged, q1_repr, q2_repr], feed_dict=feed_dict)
                     train_writer.add_summary(summary, ix)
                     q1_reprs.append(q1_repr_val)
                     q2_reprs.append(q2_repr_val)
-                    if ix % 100 == 0:
+                    if ix % 10 == 0:
                         tqdm.write("    EPOCH: %s, BATCH: %s, TRAIN CONTRASTIVE LOSS: %s" % (i, ix, batch_train_loss))
-                    if ix % 500 == 0:
                         tqdm.write("RUNNING VALIDATION....")
                         valid_iter_ = batch_generator(valid_x1,valid_x2, valid_labels, VALIDATION_BATCH_SIZE)
                         valid_losses = []
