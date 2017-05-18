@@ -11,6 +11,7 @@ class Data(object):
         self.valid_x1 = None
         self.valid_x2 = None
         self.valid_labels = None
+        self.contrastive = False
 
     def import_data(self, train_csv):
         print("importing data...")
@@ -32,10 +33,15 @@ class Data(object):
             return(sentence_ix)
         self.train_x1 = np.matrix(df.question1.str.lower().apply(sentence2onehot).tolist())
         self.train_x2 = np.matrix(df.question2.str.lower().apply(sentence2onehot).tolist())
-        labels_idx = np.array(df.is_duplicate)
-        self.train_labels = np.zeros((labels_idx.shape[0], 2))
-        for i, x in enumerate(labels_idx):
-            self.train_labels[i, int(x)] = 1
+        if self.contrastive:
+            self.train_labels = np.array(df.is_duplicate)
+            return
+        else:
+            labels_idx = np.array(df.is_duplicate)
+            self.train_labels = np.zeros((labels_idx.shape[0], 2))
+            for i, x in enumerate(labels_idx):
+                self.train_labels[i, int(x)] = 1
+            return
 
     def subsample(self, n_train_samples, n_validation_samples):
         print("subsampling data...")
@@ -46,24 +52,40 @@ class Data(object):
         validation_sample_idx = global_idx[n_train_samples:]
         self.valid_x1 = self.train_x1[validation_sample_idx, :self.embedding_dim]
         self.valid_x2 = self.train_x2[validation_sample_idx, :self.embedding_dim]
-        self.valid_labels = self.train_labels[validation_sample_idx,:]
         self.train_x1 = self.train_x1[train_sample_idx, :self.embedding_dim]
         self.train_x2 = self.train_x2[train_sample_idx, :self.embedding_dim]
-        self.train_labels = self.train_labels[train_sample_idx, :]
+        if self.contrastive:
+            self.valid_labels = self.train_labels[validation_sample_idx]
+            self.train_labels = self.train_labels[train_sample_idx]
+        else:
+            self.valid_labels = self.train_labels[validation_sample_idx,:]
+            self.train_labels = self.train_labels[train_sample_idx, :]
+
         
         
     def batch_generator(self, batch_size):
             l = self.train_x1.shape[0]
-            for ndx in range(0, l, batch_size):
-                yield (self.train_x1[ndx:min(ndx + batch_size, l), :],
-                       self.train_x2[ndx:min(ndx + batch_size, l), :],
-                       self.train_labels[ndx:min(ndx + batch_size, l),:],
-                       self.valid_x1[ndx:min(ndx + batch_size, l), :],
-                       self.valid_x2[ndx:min(ndx + batch_size, l), :],
-                       self.valid_labels[ndx:min(ndx + batch_size, l),:],
-                       )
-    def run(self, train_csv, n_train_samples=400000, n_validation_samples=10000, embedding_dim=80, save = False):
+            if self.contrastive:
+                for ndx in range(0, l, batch_size):
+                    yield (self.train_x1[ndx:min(ndx + batch_size, l), :],
+                        self.train_x2[ndx:min(ndx + batch_size, l), :],
+                        self.train_labels[ndx:min(ndx + batch_size, l)],
+                        self.valid_x1[ndx:min(ndx + batch_size, l), :],
+                        self.valid_x2[ndx:min(ndx + batch_size, l), :],
+                        self.valid_labels[ndx:min(ndx + batch_size, l)],
+                        )
+            else:
+                for ndx in range(0, l, batch_size):
+                    yield (self.train_x1[ndx:min(ndx + batch_size, l), :],
+                        self.train_x2[ndx:min(ndx + batch_size, l), :],
+                        self.train_labels[ndx:min(ndx + batch_size, l),:],
+                        self.valid_x1[ndx:min(ndx + batch_size, l), :],
+                        self.valid_x2[ndx:min(ndx + batch_size, l), :],
+                        self.valid_labels[ndx:min(ndx + batch_size, l),:],
+                        )
+    def run(self, train_csv, n_train_samples=400000, n_validation_samples=10000, embedding_dim=80, save = False, contrastive=False):
         df = self.import_data(train_csv)
+        self.contrastive = contrastive
         self.embedding_dim = embedding_dim
         self.preprocess(df)
         self.subsample(n_train_samples, n_validation_samples)
@@ -209,6 +231,17 @@ class Architecture(object):
         with tf.variable_scope("output", reuse=None) as scope:
             output = self.dense_unit(input=repr[-1], name="h4", input_dim=512*2,  hidden_dim=128, output_dim=2)
         return output
+    
+    def contrastive_siamese_network(self):
+        x1_embed = self.embed(self.x1, embedding_dim=80)
+        x2_embed = self.embed(self.x2, embedding_dim=80)
+        with tf.variable_scope("x1", reuse=None) as scope:  
+            q1_repr, _, _ = self.biRNN(input=x1_embed, num_steps=80, cell_type="LSTM", network_dim=512)
+        with tf.variable_scope("x2", reuse=None) as scope:  
+            q2_repr, _, _ = self.biRNN(input=x2_embed, num_steps=80, cell_type="LSTM", network_dim=512)
+        output = tf.squeeze(tf.norm(q1_repr[-1] - q2_repr[-1], ord=1, axis=1, keep_dims=True))
+        return output
+
 
 
 
@@ -217,32 +250,17 @@ class ContrastiveLoss(object):
     def __init__(self):
         self.labels =  tf.placeholder(dtype=tf.int32, shape=(None,), name='labels')
 
-    def manhattan(self, q1_repr, q2_repr, margin):
+    def contrastive_loss(self, output, margin):
         labels_t = tf.to_float(self.labels)
         labels_f = tf.subtract(1.0, tf.to_float(self.labels), name="1-yi")          
-        manhattan = tf.squeeze(tf.norm(q1_repr - q2_repr, ord=1, axis=1, keep_dims=True))
         C = tf.constant(margin, name="C")
-        pos = tf.multiply(labels_t, manhattan, name="y_x_eucd")
-        neg = tf.multiply(labels_f, tf.maximum(0.0, tf.subtract(C, manhattan)), name="Ny_C-eucd")
+        pos = tf.multiply(labels_t, output, name="y_x_eucd")
+        neg = tf.multiply(labels_f, tf.maximum(0.0, tf.subtract(C, output)), name="Ny_C-eucd")
         losses = tf.add(pos, neg, name="losses")
         loss = 0.5*tf.reduce_mean(losses, name="loss")
         tf.summary.scalar('contrastive_loss', loss)
         return loss
     
-    def euclidean(self, q1_repr, q2_repr, margin):
-        labels_t = tf.to_float(self.labels)
-        labels_f = tf.subtract(1.0, tf.to_float(self.labels), name="1-yi")          # labels_ = !labels;
-        eucd2 = tf.pow(tf.subtract(q1_repr, q2_repr), 2)
-        eucd2 = tf.reduce_sum(eucd2, 1)
-        eucd = tf.sqrt(eucd2+1e-6, name="eucd")
-        C = tf.constant(margin, name="C")
-        pos = tf.multiply(labels_t, eucd, name="y_x_eucd")
-        neg = tf.multiply(labels_f, tf.maximum(0.0, tf.subtract(C, eucd)), name="Ny_C-eucd")
-        losses = tf.add(pos, neg, name="losses")
-        loss = 0.5*tf.reduce_mean(losses, name="loss")
-        tf.summary.scalar('contrastive_loss', loss)
-        return loss
-
 class SoftmaxLoss(object):
     
     def __init__(self):
@@ -255,9 +273,17 @@ class SoftmaxLoss(object):
         return loss
 
 class Accuracy(object):
+
     def softmax_accuracy(self, labels, output):
         pred = tf.nn.softmax(output)
         correct_predictions = tf.equal(tf.argmax(pred, 1), tf.argmax(labels, 1))
+        accuracy = tf.reduce_mean(tf.cast(correct_predictions, tf.float32))
+        tf.summary.scalar('accuracy', accuracy)
+        return accuracy
+
+    def distance_accuracy(self, labels, output):
+        pred = tf.to_int32(tf.where(tf.greater_equal(output, tf.constant(0.5))))
+        correct_predictions = tf.equal(pred, labels)
         accuracy = tf.reduce_mean(tf.cast(correct_predictions, tf.float32))
         tf.summary.scalar('accuracy', accuracy)
         return accuracy
@@ -266,6 +292,24 @@ class Optimization(object):
 
     def adam(self, loss, lr):
         return tf.train.AdamOptimizer(lr).minimize(loss)
+
+class Build1(object):
+    def __init__(self, graph):
+        self.architecture = Architecture(graph, embedding_dim=80)
+        self.loss = ContrastiveLoss()
+        self.opt = Optimization()
+        self.accuracy = Accuracy()
+    
+    def build_contrastive_siamese(self, graph):
+        print("building constrastive siamese network...")
+        output = self.architecture.contrastive_siamese_network()
+        loss = self.loss.contrastive_loss(output, 5.0)
+        opt = self.opt.adam(loss, 0.001)
+        acc = self.accuracy.distance_accuracy(self.loss.labels, output)
+        merged = tf.summary.merge_all()
+        return output, loss, acc, opt, merged   
+
+
 
 class Build(object):
     def __init__(self, graph):
@@ -318,8 +362,8 @@ class Build(object):
         acc = self.accuracy.softmax_accuracy(self.loss.labels, output)
         merged = tf.summary.merge_all()
         return output, loss, acc, opt, merged
-
-
+    
+   
 class Display(object):
     def log_train_loss(self, epoch, batch_idx, batch_train_loss, batch_train_accuracy):
         tqdm.write("EPOCH: %s, BATCH: %s, TRAIN LOSS: %s, TRAIN ACCURACY: %s" % (epoch, batch_idx, batch_train_loss, batch_train_accuracy))
@@ -350,11 +394,11 @@ class Run(object):
     def run_siamese(self, train_csv, config):
         data = Data()
         display = Display()
-        data.run(train_csv, n_train_samples=config.n_train_samples, n_validation_samples=config.n_validation_samples, embedding_dim=config.embedding_dim, save=False)
+        data.run(train_csv, n_train_samples=config.n_train_samples, n_validation_samples=config.n_validation_samples, embedding_dim=config.embedding_dim, contrastive=config.contrastive, save=config.save)
         with tf.Graph().as_default() as graph:
-           model = Build(data)
+           model = Build1(data)
            writer = TensorBoard(graph=graph, logdir=config.logdir).writer
-           output, loss, accuracy, opt, merged = model.build_merge_siamese(graph)
+           output, loss, accuracy, opt, merged = model.build_contrastive_siamese(graph)
            init = tf.global_variables_initializer()
            with tf.Session(graph=graph) as sess:
                sess.run(init)
@@ -379,15 +423,17 @@ class Run(object):
         display.done()
 
 class Config(object):
-    def __init__(self, n_train_samples, n_validation_samples, embedding_dim, logdir):
+    def __init__(self, n_train_samples, n_validation_samples, embedding_dim, logdir, contrastive, save):
         self.n_train_samples = n_train_samples
         self.n_validation_samples = n_validation_samples
         self.embedding_dim =embedding_dim
         self.logdir = logdir
+        self.contrastive = contrastive
+        self.save = save
 
 if __name__ == '__main__':
-    config = Config(n_train_samples=8500, n_validation_samples=1000, embedding_dim=80, logdir="/tmp/quora_logs/siamese_fc_stacked")
-    Run().run_siamese('file.csv', config)
+    config = Config(n_train_samples=298000, n_validation_samples=10000, embedding_dim=80, logdir="/tmp/quora_logs/siamese_fc_stacked", contrastive=True, save=False)
+    Run().run_siamese('train.csv', config)
 
 
 
