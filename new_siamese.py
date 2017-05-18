@@ -71,25 +71,23 @@ class Architecture(object):
         self.graph = graph
         self.x1 = tf.placeholder(dtype=tf.int32, shape=(None, embedding_dim), name='x1')
         self.x2 = tf.placeholder(dtype=tf.int32, shape=(None, embedding_dim), name='x2')
-        self.q1_repr = tf.placeholder(dtype=tf.float32, shape=(embedding_dim, 300), name='x2')
-        self.q2_repr = tf.placeholder(dtype=tf.float32, shape=(embedding_dim, 300), name='x2')
+       
+    def embed(self, input, embedding_dim):
+        return tf.nn.embedding_lookup(tf.diag(tf.ones(shape=[embedding_dim])), input)
 
-    def embed(self, x, embedding_dim):
-        return tf.nn.embedding_lookup(tf.diag(tf.ones(shape=[embedding_dim])), x)
-
-    def rnn_temporal_split(self, x, num_steps):
-        embed_split = tf.split(axis=1, num_or_size_splits=num_steps, value=x)
+    def rnn_temporal_split(self, input, num_steps):
+        embed_split = tf.split(axis=1, num_or_size_splits=num_steps, value=input)
         embed_split = [tf.squeeze(x, axis=[1]) for x in embed_split]
         return embed_split
 
-    def stacked_biRNN(self, x, num_steps, cell_type, n_layers, lstm_size):
-        xs = self.rnn_temporal_split(x, num_steps)
+    def stacked_biRNN(self, input, num_steps, cell_type, n_layers, network_dim):
+        xs = self.rnn_temporal_split(input, num_steps)
         fw_cells = {"LSTM": [lambda x : tf.contrib.rnn.BasicLSTMCell(x, reuse = None) for _ in range(n_layers)], 
                     "GRU" : [lambda x : tf.contrib.rnn.GRU(x, reuse = None) for _ in range(n_layers)]}[cell_type]
         bw_cells = {"LSTM": [lambda x : tf.contrib.rnn.BasicLSTMCell(x, reuse = None) for _ in range(n_layers)], 
                     "GRU" : [lambda x : tf.contrib.rnn.GRU(x, reuse = None) for _ in range(n_layers)]}[cell_type]
-        fw_cells = [fw_cell(lstm_size) for fw_cell in fw_cells]
-        bw_cells = [bw_cell(lstm_size) for bw_cell in bw_cells]
+        fw_cells = [fw_cell(network_dim) for fw_cell in fw_cells]
+        bw_cells = [bw_cell(network_dim) for bw_cell in bw_cells]
         fw_stack = tf.contrib.rnn.MultiRNNCell(fw_cells)
         bw_stack = tf.contrib.rnn.MultiRNNCell(bw_cells)
         outputs, _, _ = tf.contrib.rnn.static_bidirectional_rnn(fw_stack,
@@ -99,14 +97,14 @@ class Architecture(object):
         final_state = outputs[-1]
         return final_state
 
-    def biRNN(self, x, num_steps, cell_type, lstm_size):
-        xs = self.rnn_temporal_split(x, num_steps)
+    def biRNN(self, input, num_steps, cell_type, network_dim):
+        xs = self.rnn_temporal_split(input, num_steps)
         fw_cell_unit = {"GRU": lambda x: tf.contrib.rnn.GRU(x, reuse = None),
                         "LSTM": lambda x: tf.contrib.rnn.BasicLSTMCell(x, reuse = None)}[cell_type]
         bw_cell_unit = {"GRU": lambda x: tf.contrib.rnn.GRU(x, reuse = None),
                         "LSTM": lambda x: tf.contrib.rnn.BasicLSTMCell(x, reuse = None)}[cell_type]
-        fw = fw_cell_unit(lstm_size)
-        bw = bw_cell_unit(lstm_size)
+        fw = fw_cell_unit(network_dim)
+        bw = bw_cell_unit(network_dim)
         outputs, _, _ = tf.contrib.rnn.static_bidirectional_rnn(fw,
                                                                 bw,
                                                                 xs,
@@ -114,44 +112,44 @@ class Architecture(object):
         final_state = outputs[-1]
         return final_state
 
-    def rnn(self, x, num_steps, cell_type, lstm_size):
-        xs = self.rnn_temporal_split(x, num_steps)
+    def rnn(self, input, num_steps, cell_type, network_dim):
+        xs = self.rnn_temporal_split(input, num_steps)
         fw_cell_unit = {"GRU": lambda x: tf.contrib.rnn.GRU(x, reuse=None),
                         "LSTM": lambda x: tf.contrib.rnn.BasicLSTMCell(x, reuse=None)}[cell_type]
-        fw = fw_cell_unit(lstm_size, reuse=None)
+        fw = fw_cell_unit(network_dim, reuse=None)
         outputs, _, _ = tf.contrib.rnn.static_rnn(fw, xs, dtype=tf.float32)
         final_state = outputs[-1]
         return final_state
     
-    def dense_unit(self, x, name, input_size, output_size):
-        bn = tf.nn.batch_normalization(x, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
-        W1 = tf.get_variable(name="W"+name, shape=[input_size, output_size], initializer=tf.contrib.layers.xavier_initializer())
+    def dense_unit(self, input, name, input_dim, output_dim):
+        bn = tf.nn.batch_normalization(input, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
+        W1 = tf.get_variable(name="W"+name, shape=[input_dim, output_dim], initializer=tf.contrib.layers.xavier_initializer())
         h1 = tf.nn.relu(tf.matmul(bn, W1))
         return h1
 
     def siamese_fc_network(self):
-        x1_embed = self.embed(self.x1, 40)
-        x2_embed = self.embed(self.x2, 40)
+        x1_embed = self.embed(self.x1, embedding_dim=80)
+        x2_embed = self.embed(self.x2, embedding_dim=80)
         with tf.variable_scope("x1", reuse=None) as scope:  
-            self.q1_repr = self.biRNN(x1_embed, 80, "LSTM", 300)
+            q1_repr = self.biRNN(input=x1_embed, num_steps=80, cell_type="LSTM", network_dim=300)
         with tf.variable_scope("x2", reuse=None) as scope:  
-            self.q2_repr = self.biRNN(x2_embed, 80, "LSTM", 300)
+            q2_repr = self.biRNN(input=x2_embed, num_steps=80, cell_type="LSTM", network_dim=300)
         with tf.variable_scope("output", reuse=None) as scope:
-            h4 = self.dense_unit(x=tf.concat([self.q1_repr, self.q2_repr], axis=1), name="h4", input_size=300*4, output_size=50)
-            h5 = self.dense_unit(x=h4, name="h5", input_size=50, output_size=50)
-            h6 = self.dense_unit(x=h5, name="h6", input_size=50, output_size=50)
-            h7 = self.dense_unit(x=h6, name="h7", input_size=50, output_size=50)
-            h8 = self.dense_unit(x=h7, name="h8", input_size=50, output_size=50)
-            output = self.dense_unit(x=h8, name="output", input_size=50, output_size=2)
+            h4 = self.dense_unit(input=tf.concat([q1_repr, q2_repr], axis=1), name="h4", input_dim=300*4, output_dim=50)
+            h5 = self.dense_unit(input=h4, name="h5", input_dim=50, output_dim=50)
+            h6 = self.dense_unit(input=h5, name="h6", input_dim=50, output_dim=50)
+            h7 = self.dense_unit(input=h6, name="h7", input_dim=50, output_dim=50)
+            h8 = self.dense_unit(input=h7, name="h8", input_dim=50, output_dim=50)
+            output = self.dense_unit(input=h8, name="output", input_dim=50, output_dim=2)
         return output
     
     def siamese_network(self):
-        x1_embed = self.embed(self.x1, 40)
-        x2_embed = self.embed(self.x2, 40)
+        x1_embed = self.embed(self.x1, embedding_dim=80)
+        x2_embed = self.embed(self.x2, embedding_dim=80)
         with tf.variable_scope("x1", reuse=None) as scope:  
-            q1_repr = self.biRNN(x1_embed, 80, "LSTM", 300)
+            q1_repr = self.biRNN(input=x1_embed, num_steps=80, cell_type="LSTM", network_dim=300)
         with tf.variable_scope("x2", reuse=None) as scope:  
-            q2_repr = self.biRNN(x2_embed, 80, "LSTM", 300)
+            q2_repr = self.biRNN(input=x2_embed, num_steps=80, cell_type="LSTM", network_dim=300)
         return q1_repr, q2_repr
 
 
@@ -202,7 +200,8 @@ class Build(object):
         q1_repr, q2_repr = self.architecture.siamese_network()
         loss = self.loss.manhattan(q1_repr, q2_repr, 1.0)
         opt = self.opt.adam(loss, 0.001)
-        return q1_repr, q2_repr, loss, opt
+        merged = tf.summary.merge_all()
+        return q1_repr, q2_repr, loss, opt, merged
 
 class Display(object):
     def log_train_loss(self, epoch, batch_idx, batch_train_loss):
@@ -210,15 +209,33 @@ class Display(object):
     def done(self):
         print("Done!")
 
+class TensorBoard(object):
+    def __init__(self, graph, logdir):
+        self.writer = tf.summary.FileWriter(logdir,graph)
+        self.logdir = logdir
+
+    def variable_summaries(self,var):
+        """Attach a lot of summaries to a Tensor (for TensorBoard visualization)."""
+        with tf.name_scope('summaries'):
+            mean = tf.reduce_mean(var)
+            tf.summary.scalar('mean', mean)
+            with tf.name_scope('stddev'):
+                stddev = tf.sqrt(tf.reduce_mean(tf.square(var - mean)))
+                tf.summary.scalar('stddev', stddev)
+            tf.summary.scalar('max', tf.reduce_max(var))
+            tf.summary.scalar('min', tf.reduce_min(var))
+            tf.summary.histogram('histogram', var)
+    
 class Run(object):
         
-    def run_siamese(self, train_csv):
+    def run_siamese(self, train_csv, config):
         data = Data()
         display = Display()
-        data.run(train_csv, n_train_samples=50, n_validation_samples=10, embedding_dim=80, save=False)
+        data.run(train_csv, n_train_samples=config.n_train_samples, n_validation_samples=config.n_validation_samples, embedding_dim=config.embedding_dim, save=False)
         with tf.Graph().as_default() as graph:
            model = Build(data)
-           q1_repr, q2_repr, loss, opt = model.build_siamese(graph)
+           writer = TensorBoard(graph=graph, logdir=config.logdir).writer
+           q1_repr, q2_repr, loss, opt, merged = model.build_siamese(graph)
            init = tf.global_variables_initializer()
            with tf.Session(graph=graph) as sess:
                sess.run(init)
@@ -226,14 +243,22 @@ class Run(object):
                  train_iter_ = data.batch_generator(100)  
                  for batch_idx, batch in enumerate(tqdm(train_iter_)):
                     train_x1_batch, train_x2_batch, train_labels_batch, valid_x1_batch, valid_x2_batch, valid_labels_batch = batch
-                    _, _, batch_train_loss, _= sess.run([q1_repr, q2_repr, loss, opt], feed_dict={
+                    _, _, batch_train_loss, _, summary = sess.run([q1_repr, q2_repr, loss, opt, merged], feed_dict={
                                                                                                   model.architecture.x1 : train_x1_batch,
                                                                                                   model.architecture.x2 : train_x2_batch,
                                                                                                   model.loss.labels : train_labels_batch
                                                                                                  })
                     display.log_train_loss(epoch, batch_idx, batch_train_loss)
+                    writer.add_summary(summary, batch_idx)
         display.done()
 
+class Config(object):
+    def __init__(self, n_train_samples, n_validation_samples, embedding_dim, logdir):
+        self.n_train_samples = n_train_samples
+        self.n_validation_samples = n_validation_samples
+        self.embedding_dim =embedding_dim
+        self.logdir = logdir
 
 if __name__ == '__main__':
-    Run().run_siamese('train.csv')
+    config = Config(n_train_samples=298000, n_validation_samples=10000, embedding_dim=80, logdir="/tmp/quora_logs/train_1")
+    Run().run_siamese('train.csv', config)
