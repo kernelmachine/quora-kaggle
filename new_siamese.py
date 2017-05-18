@@ -146,9 +146,9 @@ class Architecture(object):
         return bn_out
     
     def siamese_stacked_fc_network(self):
-        embed = self.embed(tf.concat([self.x1, self.x2], axis=1), embedding_dim=160)
+        embed = self.embed(tf.concat([self.x1, self.x2], axis=1), embedding_dim=80*2)
         with tf.variable_scope("x1", reuse=None) as scope:  
-            repr, _, _ = self.stacked_biRNN(input=embed, num_steps=160, cell_type="LSTM", n_layers=3, network_dim=300)
+            repr, _, _ = self.stacked_biRNN(input=embed, num_steps=80*2, cell_type="LSTM", n_layers=3, network_dim=300)
         with tf.variable_scope("output", reuse=None) as scope:
             h4 = self.dense_unit(input=repr[-1], name="h4", input_dim=300*2, hidden_dim=300, output_dim=300)
             h5 = self.dense_unit(input=h4, name="h5", input_dim=300, hidden_dim=300, output_dim=300)
@@ -205,11 +205,9 @@ class Architecture(object):
     def merge_siamese_network(self):
         embed = self.embed(tf.concat([self.x1, self.x2], axis = 1), embedding_dim=160)
         with tf.variable_scope("x1", reuse=None) as scope:  
-            repr = self.biRNN(input=embed, num_steps=160, cell_type="LSTM", network_dim=512)
-        # with tf.variable_scope("x2", reuse=None) as scope:  
-        #     q2_repr = self.biRNN(input=x2_embed, num_steps=80, cell_type="LSTM", network_dim=512)
+            repr, _, _ = self.biRNN(input=embed, num_steps=160, cell_type="LSTM", network_dim=512)
         with tf.variable_scope("output", reuse=None) as scope:
-            output = self.dense_unit(input=repr, name="h4", input_dim=512*2,  hidden_dim=128, output_dim=2)
+            output = self.dense_unit(input=repr[-1], name="h4", input_dim=512*2,  hidden_dim=128, output_dim=2)
         return output
 
 
@@ -356,7 +354,7 @@ class Run(object):
         with tf.Graph().as_default() as graph:
            model = Build(data)
            writer = TensorBoard(graph=graph, logdir=config.logdir).writer
-           output, loss, accuracy, opt, merged = model.build_siamese_stacked_fc(graph)
+           output, loss, accuracy, opt, merged = model.build_merge_siamese(graph)
            init = tf.global_variables_initializer()
            with tf.Session(graph=graph) as sess:
                sess.run(init)
@@ -370,13 +368,12 @@ class Run(object):
                                                                                                 model.architecture.x2 : train_x2_batch,
                                                                                                 model.loss.labels : train_labels_batch
                                                                                               })
-                    if batch_idx % 10 == 0:
-                        batch_valid_loss, batch_valid_accuracy = sess.run([loss, accuracy], feed_dict={
-                                                                                                        model.architecture.x1 : valid_x1_batch,
-                                                                                                        model.architecture.x2 : valid_x2_batch,
-                                                                                                        model.loss.labels : valid_labels_batch
-                                                                                                      })
-                        display.log_validation_loss(epoch, batch_idx, batch_valid_loss, batch_valid_accuracy)
+                    batch_valid_loss, batch_valid_accuracy = sess.run([loss, accuracy], feed_dict={
+                                                                                                    model.architecture.x1 : valid_x1_batch,
+                                                                                                    model.architecture.x2 : valid_x2_batch,
+                                                                                                    model.loss.labels : valid_labels_batch
+                                                                                                    })
+                    display.log_validation_loss(epoch, batch_idx, batch_valid_loss, batch_valid_accuracy)
                     display.log_train_loss(epoch, batch_idx, batch_train_loss, batch_train_accuracy)
                     writer.add_summary(summary, batch_idx)
         display.done()
@@ -389,5 +386,13 @@ class Config(object):
         self.logdir = logdir
 
 if __name__ == '__main__':
-    config = Config(n_train_samples=8500, n_validation_samples=900, embedding_dim=80, logdir="/tmp/quora_logs/siamese_fc_stacked")
-    Run().run_siamese('sick.csv', config)
+    config = Config(n_train_samples=8500, n_validation_samples=1000, embedding_dim=80, logdir="/tmp/quora_logs/siamese_fc_stacked")
+    Run().run_siamese('file.csv', config)
+
+
+
+## TODO:
+## * add word2vec/glove functionality
+## * add tensorboard optional
+## * make it easier to change dimensions
+## * cycle validation set
