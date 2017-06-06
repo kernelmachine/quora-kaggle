@@ -18,12 +18,14 @@ class Layer(object):
 
     def stacked_biRNN(self, input, cell_type, n_layers, network_dim):
         xs = self.rnn_temporal_split(input)
+        dropout = lambda y : tf.contrib.rnn.DropoutWrapper(y, output_keep_prob=0.5, seed=42)
+
         fw_cells = {"LSTM": [lambda x : tf.contrib.rnn.BasicLSTMCell(x, reuse = None) for _ in range(n_layers)], 
                     "GRU" : [lambda x : tf.contrib.rnn.GRU(x, reuse = None) for _ in range(n_layers)]}[cell_type]
         bw_cells = {"LSTM": [lambda x : tf.contrib.rnn.BasicLSTMCell(x, reuse = None) for _ in range(n_layers)], 
                     "GRU" : [lambda x : tf.contrib.rnn.GRU(x, reuse = None) for _ in range(n_layers)]}[cell_type]
-        fw_cells = [fw_cell(network_dim) for fw_cell in fw_cells]
-        bw_cells = [bw_cell(network_dim) for bw_cell in bw_cells]
+        fw_cells = [dropout(fw_cell(network_dim)) for fw_cell in fw_cells]
+        bw_cells = [dropout(bw_cell(network_dim)) for bw_cell in bw_cells]
         fw_stack = tf.contrib.rnn.MultiRNNCell(fw_cells)
         bw_stack = tf.contrib.rnn.MultiRNNCell(bw_cells)
         outputs, fw_output_state, bw_output_state = tf.contrib.rnn.static_bidirectional_rnn(fw_stack,
@@ -72,9 +74,10 @@ class Layer(object):
         W1 = tf.get_variable(name="W1_"+name, shape=[input_dim, hidden_dim], initializer=tf.contrib.layers.xavier_initializer())
         b1 = tf.get_variable(name="b1_"+name, shape=[hidden_dim], initializer=tf.contrib.layers.xavier_initializer())
         h1 = tf.nn.relu(tf.matmul(bn, W1) + b1)
+        d = tf.nn.dropout(h1, keep_prob = 0.5, seed = 42)
         W2 = tf.get_variable(name="W2_"+name, shape=[hidden_dim, output_dim], initializer=tf.contrib.layers.xavier_initializer())
         b2 = tf.get_variable(name="b2_"+name, shape=[output_dim], initializer=tf.contrib.layers.xavier_initializer())
-        out = tf.matmul(h1, W2) + b2
+        out = tf.matmul(d, W2) + b2
         bn_out = tf.nn.batch_normalization(out, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
         return bn_out
 

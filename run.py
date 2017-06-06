@@ -112,7 +112,7 @@ if __name__ == '__main__':
                     embedding_dim=300, 
                     train_x1 = args.trainx1,
                     train_x2 = args.trainx2,
-                    logdir="/tmp/quora_logs/siamese_stacked_w_validation", 
+                    logdir="/tmp/quora_logs/siamese_stacked_w_dropout", 
                     contrastive=False, 
                     save_embedding=args.save_embedding,
                     save_train_data=args.save_train,
