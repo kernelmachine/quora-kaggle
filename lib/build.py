@@ -3,8 +3,8 @@ from lib.architecture import Network
 from lib.optimization import *
 
 class BuildContrastiveSiamese(object):
-    def __init__(self, graph):
-        self.network = Network(graph, embedding_dim=300)
+    def __init__(self, max_len, embedding_dim, graph):
+        self.network = Network(graph, max_len = max_len, embedding_dim=embedding_dim)
         self.loss = ContrastiveLoss()
         self.opt = Optimization()
         self.accuracy = Accuracy()
@@ -20,8 +20,8 @@ class BuildContrastiveSiamese(object):
 
 
 class BuildSiamese(object):
-    def __init__(self, graph):
-        self.network = Network(graph, embedding_dim=300)
+    def __init__(self, graph, max_len, embedding_dim):
+        self.network = Network(graph, max_len=max_len, embedding_dim=embedding_dim)
         self.loss = SigmoidLoss()
         self.opt = Optimization()
         self.accuracy = Accuracy()

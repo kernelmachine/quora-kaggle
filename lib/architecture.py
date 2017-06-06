@@ -1,22 +1,23 @@
 import tensorflow as tf
 
 class Layer(object):
-    def __init__(self, graph, embedding_dim):
+    def __init__(self, graph, max_len, embedding_dim):
         self.graph = graph
-        self.x1 = tf.placeholder(dtype=tf.int32, shape=(None, embedding_dim), name='x1')
-        self.x2 = tf.placeholder(dtype=tf.int32, shape=(None, embedding_dim), name='x2')
+        self.x1 = tf.placeholder(dtype=tf.int32, shape=(None, max_len), name='x1')
+        self.x2 = tf.placeholder(dtype=tf.int32, shape=(None, max_len), name='x2')
         self.embedding_matrix = tf.placeholder(dtype=tf.float32, shape=(None, embedding_dim), name='x2')
 
-    def embed(self, input, embedding_dim):
+    def embed(self, input):
         return tf.nn.embedding_lookup(self.embedding_matrix, input)
 
-    def rnn_temporal_split(self, input, num_steps):
+    def rnn_temporal_split(self, input):
+        num_steps = input.get_shape().as_list()[1]
         embed_split = tf.split(axis=1, num_or_size_splits=num_steps, value=input)
         embed_split = [tf.squeeze(x, axis=[1]) for x in embed_split]
         return embed_split
 
-    def stacked_biRNN(self, input, num_steps, cell_type, n_layers, network_dim):
-        xs = self.rnn_temporal_split(input, num_steps)
+    def stacked_biRNN(self, input, cell_type, n_layers, network_dim):
+        xs = self.rnn_temporal_split(input)
         fw_cells = {"LSTM": [lambda x : tf.contrib.rnn.BasicLSTMCell(x, reuse = None) for _ in range(n_layers)], 
                     "GRU" : [lambda x : tf.contrib.rnn.GRU(x, reuse = None) for _ in range(n_layers)]}[cell_type]
         bw_cells = {"LSTM": [lambda x : tf.contrib.rnn.BasicLSTMCell(x, reuse = None) for _ in range(n_layers)], 
@@ -32,8 +33,8 @@ class Layer(object):
         
         return outputs, fw_output_state, bw_output_state  
 
-    def biRNN(self, input, num_steps, cell_type, network_dim):
-        xs = self.rnn_temporal_split(input, num_steps)
+    def biRNN(self, input, cell_type, network_dim):
+        xs = self.rnn_temporal_split(input)
         fw_cell_unit = {"GRU": lambda x: tf.contrib.rnn.GRU(x, reuse = None),
                         "LSTM": lambda x: tf.contrib.rnn.BasicLSTMCell(x, reuse = None)}[cell_type]
         bw_cell_unit = {"GRU": lambda x: tf.contrib.rnn.GRU(x, reuse = None),
@@ -46,8 +47,8 @@ class Layer(object):
                                                                 dtype=tf.float32)
         return outputs, output_state_fw, output_state_bw
 
-    def rnn(self, input, num_steps, cell_type, network_dim):
-        xs = self.rnn_temporal_split(input, num_steps)
+    def rnn(self, input, cell_type, network_dim):
+        xs = self.rnn_temporal_split(input)
         fw_cell_unit = {"GRU": lambda x: tf.contrib.rnn.GRU(x, reuse=None),
                         "LSTM": lambda x: tf.contrib.rnn.BasicLSTMCell(x, reuse=None)}[cell_type]
         fw = fw_cell_unit(network_dim, reuse=None)
@@ -78,19 +79,19 @@ class Layer(object):
         return bn_out
 
 class Network(Layer):
-    def __init__(self, graph, embedding_dim):
-        super(Network, self).__init__(graph, embedding_dim)
+    def __init__(self, graph, max_len, embedding_dim):
+        super(Network, self).__init__(graph, max_len, embedding_dim)
     
     def fc_network(self):
-        embed = self.embed(tf.concat([self.x1, self.x2], axis=1), embedding_dim=300*2)
+        embed = self.embed(tf.concat([self.x1, self.x2], axis=1))
         with tf.variable_scope("output", reuse=None) as scope:
             output = self.dense_unit(embed, "feedforward", input_dim=300*2, hidden_dim=100, output_dim=2)
         return output
 
     def siamese_stacked_fc_network(self):
-        embed = self.embed(tf.concat([self.x1, self.x2], axis=1), embedding_dim=300*2)
+        embed = self.embed(tf.concat([self.x1, self.x2], axis=1))
         with tf.variable_scope("x1", reuse=None) as scope:  
-            repr, _, _ = self.stacked_biRNN(input=embed, num_steps=300*2, cell_type="LSTM", n_layers=3, network_dim=300)
+            repr, _, _ = self.stacked_biRNN(input=embed, cell_type="LSTM", n_layers=3, network_dim=300)
         with tf.variable_scope("output", reuse=None) as scope:
             h4 = self.dense_unit(input=repr[-1], name="h4", input_dim=300*2, hidden_dim=300, output_dim=300)
             h5 = self.dense_unit(input=h4, name="h5", input_dim=300, hidden_dim=300, output_dim=300)
@@ -101,41 +102,41 @@ class Network(Layer):
         return output
 
     def siamese_fc_network(self):
-        x1_embed = self.embed(self.x1, embedding_dim=300)
-        x2_embed = self.embed(self.x2, embedding_dim=300)
+        x1_embed = self.embed(self.x1)
+        x2_embed = self.embed(self.x2)
         with tf.variable_scope("x1", reuse=None) as scope:  
-            q1_repr, _, _ = self.biRNN(input=x1_embed, num_steps=300, cell_type="LSTM", network_dim=512)
+            q1_repr, _, _ = self.biRNN(input=x1_embed, cell_type="LSTM", network_dim=512)
         with tf.variable_scope("x2", reuse=None) as scope:  
-            q2_repr, _, _ = self.biRNN(input=x2_embed, num_steps=300, cell_type="LSTM", network_dim=512)
+            q2_repr, _, _ = self.biRNN(input=x2_embed, cell_type="LSTM", network_dim=512)
         with tf.variable_scope("output", reuse=None) as scope:
             h4 = self.dense_unit(input=tf.concat([q1_repr[-1], q2_repr[-1]], axis=1), name="h4", 
-                                 input_dim=512*4, hidden_dim=300, output_dim=300)
-            h5 = self.dense_unit(input=h4, name="h5", input_dim=300, hidden_dim=300, output_dim=300)
-            h6 = self.dense_unit(input=h5, name="h6", input_dim=300, hidden_dim=300, output_dim=300)
-            h7 = self.dense_unit(input=h6, name="h7", input_dim=300, hidden_dim=300, output_dim=300)
-            h8 = self.dense_unit(input=h7, name="h8", input_dim=300, hidden_dim=300, output_dim=300)
-            output = self.dense_unit(input=h8, name="output", input_dim=300, hidden_dim=300, output_dim=2)
+                                 input_dim=512*4, hidden_dim=256, output_dim=128)
+            h5 = self.dense_unit(input=h4, name="h5", input_dim=128, hidden_dim=128, output_dim=128)
+            h6 = self.dense_unit(input=h5, name="h6", input_dim=128, hidden_dim=128, output_dim=128)
+            h7 = self.dense_unit(input=h6, name="h7", input_dim=128, hidden_dim=128, output_dim=128)
+            h8 = self.dense_unit(input=h7, name="h8", input_dim=128, hidden_dim=128, output_dim=128)
+            output = self.dense_unit(input=h8, name="output", input_dim=128, hidden_dim=64, output_dim=2)
         return output
     
     def siamese_network(self):
-        x1_embed = self.embed(self.x1, embedding_dim=300)
-        x2_embed = self.embed(self.x2, embedding_dim=300)
+        x1_embed = self.embed(self.x1)
+        x2_embed = self.embed(self.x2)
         with tf.variable_scope("x1", reuse=None) as scope:  
-            q1_repr, _, _ = self.biRNN(input=x1_embed, num_steps=300, cell_type="LSTM", network_dim=512)
+            q1_repr, _, _ = self.stacked_biRNN(input=x1_embed, cell_type="LSTM", n_layers=3, network_dim=512)
         with tf.variable_scope("x2", reuse=None) as scope:  
-            q2_repr, _, _ = self.biRNN(input=x2_embed, num_steps=300, cell_type="LSTM", network_dim=512)
+            q2_repr, _, _ = self.stacked_biRNN(input=x2_embed, cell_type="LSTM", n_layers=3, network_dim=512)
         with tf.variable_scope("output", reuse=None) as scope:
             output = self.dense_unit(input=tf.concat([q1_repr[-1], q2_repr[-1]], axis=1), name="h4", 
                                      input_dim=512*4,  hidden_dim=300, output_dim=2)
         return output
     
     def match_network(self):
-        x1_embed = self.embed(self.x1, embedding_dim=80)
-        x2_embed = self.embed(self.x2, embedding_dim=80)
+        x1_embed = self.embed(self.x1)
+        x2_embed = self.embed(self.x2)
         with tf.variable_scope("x1", reuse=None) as scope:  
-            x1_outputs, x1_fw_final, x1_bw_final = self.biRNN(input=x1_embed, num_steps=80, cell_type="LSTM", network_dim=100)
+            x1_outputs, x1_fw_final, x1_bw_final = self.biRNN(input=x1_embed, cell_type="LSTM", network_dim=100)
         with tf.variable_scope("x2", reuse=None) as scope:  
-            x2_outputs, x2_fw_final, x2_bw_final = self.biRNN(input=x2_embed, num_steps=80, cell_type="LSTM", network_dim=100)
+            x2_outputs, x2_fw_final, x2_bw_final = self.biRNN(input=x2_embed, cell_type="LSTM", network_dim=100)
         with tf.variable_scope("match", reuse=None) as scope:
             m1, m2 = self.matchLayer(x1_outputs=x1_outputs, 
                                      x1_fw_final=x1_fw_final, 
@@ -145,29 +146,29 @@ class Network(Layer):
                                      x2_bw_final=x2_bw_final, 
                                      weight_dim=512)
         with tf.variable_scope("agg_x1", reuse=None) as scope:  
-            m1_agg, _, _ = self.biRNN(input=m1, num_steps=100, cell_type="LSTM", network_dim=100)
+            m1_agg, _, _ = self.biRNN(input=m1, cell_type="LSTM", network_dim=100)
         with tf.variable_scope("agg_x2", reuse=None) as scope:  
-            m2_agg, _, _ = self.biRNN(input=m2, num_steps=100, cell_type="LSTM", network_dim=100)
+            m2_agg, _, _ = self.biRNN(input=m2, cell_type="LSTM", network_dim=100)
         with tf.variable_scope("output", reuse=None) as scope:      
             output = self.dense_unit(input=tf.concat([m1_agg[-1], m2_agg[-1]], axis=1), name="h4", 
                                      input_dim=100*4,  hidden_dim=128, output_dim=2)
         return output
 
     def merge_siamese_network(self):
-        embed = self.embed(tf.concat([self.x1, self.x2], axis = 1), embedding_dim=160)
+        embed = self.embed(tf.concat([self.x1, self.x2], axis = 1))
         with tf.variable_scope("x1", reuse=None) as scope:  
-            repr, _, _ = self.biRNN(input=embed, num_steps=160, cell_type="LSTM", network_dim=512)
+            repr, _, _ = self.biRNN(input=embed, cell_type="LSTM", network_dim=512)
         with tf.variable_scope("output", reuse=None) as scope:
             output = self.dense_unit(input=repr[-1], name="h4", input_dim=512*2,  hidden_dim=128, output_dim=2)
         return output
     
     def contrastive_siamese_network(self):
-        x1_embed = self.embed(self.x1, embedding_dim=80)
-        x2_embed = self.embed(self.x2, embedding_dim=80)
+        x1_embed = self.embed(self.x1)
+        x2_embed = self.embed(self.x2)
         with tf.variable_scope("x1", reuse=None) as scope:  
-            q1_repr, _, _ = self.biRNN(input=x1_embed, num_steps=80, cell_type="LSTM", network_dim=512)
+            q1_repr, _, _ = self.biRNN(input=x1_embed, cell_type="LSTM", network_dim=512)
         with tf.variable_scope("x2", reuse=None) as scope:  
-            q2_repr, _, _ = self.biRNN(input=x2_embed, num_steps=80, cell_type="LSTM", network_dim=512)
+            q2_repr, _, _ = self.biRNN(input=x2_embed, cell_type="LSTM", network_dim=512)
         output = tf.squeeze(tf.norm(q1_repr[-1] - q2_repr[-1], ord=1, axis=1, keep_dims=True))
         return output
 

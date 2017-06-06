@@ -7,6 +7,7 @@ from gensim.models import KeyedVectors
 
 class Data(object):
     def __init__(self):
+        self.train_csv = None
         self.train_x1 = None
         self.train_x2 = None
         self.train_labels = None
@@ -55,22 +56,22 @@ class Data(object):
 
         if self.train_x1 is None or self.train_x2 is None:
             tk = text.Tokenizer(num_words=200000)
-            tk.fit_on_texts(list(df.question1.values) + list(df.question2.values.astype(str)))
+            tk.fit_on_texts(list(df.question1.values.astype(str)) + list(df.question2.values.astype(str)))
             word_index = tk.word_index
             train_x1 = tk.texts_to_sequences(df.question1.values)
-            self.train_x1 = sequence.pad_sequences(train_x1, maxlen=self.embedding_dim)
+            self.train_x1 = sequence.pad_sequences(train_x1, maxlen=self.max_len)
             train_x2 = tk.texts_to_sequences(df.question2.values.astype(str))
-            self.train_x2 = sequence.pad_sequences(train_x2, maxlen=self.embedding_dim)
-        
+            self.train_x2 = sequence.pad_sequences(train_x2, maxlen=self.max_len)
+            
         if save_train_data:
             print("saving preprocessed training data...")
-            np.save("train_x1.npy", self.train_x1)
-            np.save("train_x2.npy", self.train_x2)
+            np.save("%s_x1.npy" % self.train_csv, self.train_x1)
+            np.save("%s_x2.npy" % self.train_csv , self.train_x2)
 
         if self.embedding_matrix is None:
             if self.train_x1 is not None or self.train_x2 is not None:
                 tk = text.Tokenizer(num_words=200000)
-                tk.fit_on_texts(list(df.question1.values) + list(df.question2.values.astype(str)))
+                tk.fit_on_texts(list(df.question1.values.astype(str)) + list(df.question2.values.astype(str)))
                 word_index = tk.word_index
             print("downloading word2vec...")
             word2vec = KeyedVectors.load_word2vec_format('data/GoogleNews-vectors-negative300.bin', binary=True)
@@ -82,7 +83,7 @@ class Data(object):
                     self.embedding_matrix[i] = word2vec.word_vec(word)
             if save_embedding:
                 print("saving embedding matrix...")
-                np.save("embedding.npy", self.embedding_matrix)
+                np.save("%s_embedding.npy" % self.train_csv, self.embedding_matrix)
         if self.contrastive:
             self.train_labels = np.array(df.is_duplicate)
             return
@@ -134,12 +135,14 @@ class Data(object):
                         self.valid_labels[ndx:min(ndx + batch_size, l),:],
                         )
                         
-    def run(self, train_csv, n_train_samples=400000, n_validation_samples=10000, embedding_matrix=None, embedding_dim=80, train_x1=None, train_x2=None, save_embedding=False, save_train_data=False, contrastive=False):
+    def run(self, train_csv, n_train_samples=400000, n_validation_samples=10000, embedding_matrix=None, embedding_dim=300, max_len=50, train_x1=None, train_x2=None, save_embedding=False, save_train_data=False, contrastive=False):
+        self.train_csv = train_csv
         df = self.import_data(train_csv)
         self.contrastive = contrastive
         if embedding_matrix is not None:
             print("loading embedding matrix from %s" % embedding_matrix)
             self.embedding_matrix = np.load(embedding_matrix)
+        self.max_len = max_len
         self.embedding_dim = embedding_dim
         if train_x1 is not None:
             print("loading train_x1 from %s" % train_x1)
