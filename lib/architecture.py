@@ -1,6 +1,6 @@
 import tensorflow as tf
 
-class Architecture(object):
+class Layer(object):
     def __init__(self, graph, embedding_dim):
         self.graph = graph
         self.x1 = tf.placeholder(dtype=tf.int32, shape=(None, embedding_dim), name='x1')
@@ -76,7 +76,17 @@ class Architecture(object):
         out = tf.matmul(h1, W2) + b2
         bn_out = tf.nn.batch_normalization(out, mean = 0.0, variance = 1.0, offset=tf.constant(0.0), scale=None, variance_epsilon=0.001)
         return bn_out
+
+class Network(Layer):
+    def __init__(self, graph, embedding_dim):
+        super(Network, self).__init__(graph, embedding_dim)
     
+    def fc_network(self):
+        embed = self.embed(tf.concat([self.x1, self.x2], axis=1), embedding_dim=300*2)
+        with tf.variable_scope("output", reuse=None) as scope:
+            output = self.dense_unit(embed, "feedforward", input_dim=300*2, hidden_dim=100, output_dim=2)
+        return output
+
     def siamese_stacked_fc_network(self):
         embed = self.embed(tf.concat([self.x1, self.x2], axis=1), embedding_dim=300*2)
         with tf.variable_scope("x1", reuse=None) as scope:  
@@ -98,7 +108,8 @@ class Architecture(object):
         with tf.variable_scope("x2", reuse=None) as scope:  
             q2_repr, _, _ = self.biRNN(input=x2_embed, num_steps=300, cell_type="LSTM", network_dim=512)
         with tf.variable_scope("output", reuse=None) as scope:
-            h4 = self.dense_unit(input=tf.concat([q1_repr[-1], q2_repr[-1]], axis=1), name="h4", input_dim=512*4, hidden_dim=300, output_dim=300)
+            h4 = self.dense_unit(input=tf.concat([q1_repr[-1], q2_repr[-1]], axis=1), name="h4", 
+                                 input_dim=512*4, hidden_dim=300, output_dim=300)
             h5 = self.dense_unit(input=h4, name="h5", input_dim=300, hidden_dim=300, output_dim=300)
             h6 = self.dense_unit(input=h5, name="h6", input_dim=300, hidden_dim=300, output_dim=300)
             h7 = self.dense_unit(input=h6, name="h7", input_dim=300, hidden_dim=300, output_dim=300)
@@ -114,7 +125,8 @@ class Architecture(object):
         with tf.variable_scope("x2", reuse=None) as scope:  
             q2_repr, _, _ = self.biRNN(input=x2_embed, num_steps=300, cell_type="LSTM", network_dim=512)
         with tf.variable_scope("output", reuse=None) as scope:
-            output = self.dense_unit(input=tf.concat([q1_repr[-1], q2_repr[-1]], axis=1), name="h4", input_dim=512*4,  hidden_dim=300, output_dim=2)
+            output = self.dense_unit(input=tf.concat([q1_repr[-1], q2_repr[-1]], axis=1), name="h4", 
+                                     input_dim=512*4,  hidden_dim=300, output_dim=2)
         return output
     
     def match_network(self):
@@ -137,7 +149,8 @@ class Architecture(object):
         with tf.variable_scope("agg_x2", reuse=None) as scope:  
             m2_agg, _, _ = self.biRNN(input=m2, num_steps=100, cell_type="LSTM", network_dim=100)
         with tf.variable_scope("output", reuse=None) as scope:      
-            output = self.dense_unit(input=tf.concat([m1_agg[-1], m2_agg[-1]], axis=1), name="h4", input_dim=100*4,  hidden_dim=128, output_dim=2)
+            output = self.dense_unit(input=tf.concat([m1_agg[-1], m2_agg[-1]], axis=1), name="h4", 
+                                     input_dim=100*4,  hidden_dim=128, output_dim=2)
         return output
 
     def merge_siamese_network(self):
