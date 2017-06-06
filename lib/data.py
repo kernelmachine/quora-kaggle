@@ -121,18 +121,12 @@ class Data(object):
                     yield (self.train_x1[ndx:min(ndx + batch_size, l), :],
                         self.train_x2[ndx:min(ndx + batch_size, l), :],
                         self.train_labels[ndx:min(ndx + batch_size, l)],
-                        self.valid_x1[ndx:min(ndx + batch_size, l), :],
-                        self.valid_x2[ndx:min(ndx + batch_size, l), :],
-                        self.valid_labels[ndx:min(ndx + batch_size, l)],
                         )
             else:
                 for ndx in range(0, l, batch_size):
                     yield (self.train_x1[ndx:min(ndx + batch_size, l), :],
                         self.train_x2[ndx:min(ndx + batch_size, l), :],
                         self.train_labels[ndx:min(ndx + batch_size, l),:],
-                        self.valid_x1[ndx:min(ndx + batch_size, l), :],
-                        self.valid_x2[ndx:min(ndx + batch_size, l), :],
-                        self.valid_labels[ndx:min(ndx + batch_size, l),:],
                         )
                         
     def run(self, train_csv, n_train_samples=400000, n_validation_samples=10000, embedding_matrix=None, embedding_dim=300, max_len=50, train_x1=None, train_x2=None, save_embedding=False, save_train_data=False, contrastive=False):

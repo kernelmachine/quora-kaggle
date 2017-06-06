@@ -52,32 +52,36 @@ class Run(object):
         with tf.Graph().as_default() as graph:
            config.model = config.model(data)
            writer = TensorBoard(graph=graph, logdir=config.logdir).writer
-           output, loss, accuracy, opt, merged = config.build_network(graph)
+           output, loss, acc, train_summ, valid_summ, opt, merged = config.build_network(graph)
            init = tf.global_variables_initializer()
            with tf.Session(graph=graph) as sess:
                sess.run(init)
                for epoch in range(config.n_epochs):
                  train_iter_ = data.batch_generator(config.batch_size)
                  for batch_idx, batch in enumerate(tqdm(train_iter_)):
-                    train_x1_batch, train_x2_batch, train_labels_batch, valid_x1_batch, valid_x2_batch, valid_labels_batch = batch
-                    _, batch_train_loss, batch_train_accuracy, _, summary = sess.run([output, loss, accuracy, opt, merged], 
+                    train_x1_batch, train_x2_batch, train_labels_batch = batch
+                    _, batch_train_loss, batch_train_accuracy, batch_train_summary, _, summary = sess.run([output, loss, acc, train_summ, opt, merged], 
                                                                                     feed_dict={
                                                                                                 config.model.network.x1 : train_x1_batch,
                                                                                                 config.model.network.x2 : train_x2_batch,
                                                                                                 config.model.loss.labels : train_labels_batch,
                                                                                                 config.model.network.embedding_matrix : data.embedding_matrix
                                                                                               })
-                    display.log_train_loss(epoch, batch_idx, batch_train_loss, batch_train_accuracy)
+                    display.log_train(epoch, batch_idx, batch_train_loss, batch_train_accuracy)
+                    writer.add_summary(batch_train_summary, batch_idx)
+
                     if config.calculate_validation:
-                        batch_valid_loss, batch_valid_accuracy = sess.run([loss, accuracy], feed_dict={
-                                                                                                        config.model.network.x1 : valid_x1_batch,
-                                                                                                        config.model.network.x2 : valid_x2_batch,
-                                                                                                        config.model.loss.labels : valid_labels_batch,
-                                                                                                        config.model.network.embedding_matrix : data.embedding_matrix
-                                                                                                        })
-                        display.log_validation_loss(epoch, batch_idx, batch_valid_loss, batch_valid_accuracy)
-                    
+                        if batch_idx % 100 == 0:
+                            batch_valid_accuracy, batch_valid_summary = sess.run([acc, valid_summ], feed_dict={
+                                                                                config.model.network.x1 : data.valid_x1,
+                                                                                config.model.network.x2 : data.valid_x2,
+                                                                                config.model.loss.labels : data.valid_labels,
+                                                                                config.model.network.embedding_matrix : data.embedding_matrix
+                                                                                })
+                            display.log_validation(epoch, batch_idx, batch_valid_accuracy)
+                            writer.add_summary(batch_valid_summary, batch_idx)
                     writer.add_summary(summary, batch_idx)
+                    
         display.done()
 
 if __name__ == '__main__':
@@ -99,7 +103,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
                                          
     config = Config(network="siamese",
-                    n_train_samples=90000, 
+                    n_train_samples=298000, 
                     n_validation_samples=10000,
                     n_epochs=10,
                     batch_size=100,
@@ -108,11 +112,11 @@ if __name__ == '__main__':
                     embedding_dim=300, 
                     train_x1 = args.trainx1,
                     train_x2 = args.trainx2,
-                    logdir="/tmp/quora_logs/fc", 
+                    logdir="/tmp/quora_logs/siamese_stacked_w_validation", 
                     contrastive=False, 
                     save_embedding=args.save_embedding,
                     save_train_data=args.save_train,
-                    calculate_validation=False)
+                    calculate_validation=True)
     Run().run_siamese(args.master, config)
 
 
