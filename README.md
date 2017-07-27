@@ -1,3 +1,3 @@
 # quora-kaggle
 
-Explorations in tensorflow. Mostly Siamese Networks, stacked RNN networks.
+Explorations in tensorflow. Mostly Siamese Networks, stacked RNNs.
